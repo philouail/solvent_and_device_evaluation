@@ -1,0 +1,1695 @@
+---
+title: "pilot_study"
+author: "Philippine Louail"
+date: "2024-05-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#library
+
+```{r packages, message=FALSE, warning=FALSE}
+library(MsExperiment)
+library(xcms)
+library(Spectra)
+library(RColorBrewer)
+library(pander)
+library(readxl)
+library(MetaboCoreUtils)
+library(pheatmap)
+library(MsBackendSql)
+library(readxl)
+library(Biobase)
+library(SummarizedExperiment)
+library(openxlsx)
+library(gridExtra)
+library(ggfortify)
+library(vioplot)
+```
+
+
+# intro
+
+```{r load-data}
+# get filenames in the pd 
+MZML_PATH <- paste0(getwd(), "/mzmL files/")
+MZML_PATH <- "/home/plouail/pilot_study/mzmL files/"
+#' No Phenodata - to be added
+pd <- read_xlsx("phenodata.xlsx") |>
+    as.data.frame()
+
+full <- readMsExperiment(paste0(MZML_PATH, pd$filename), sampleData = pd)
+full
+
+#remove second injection of each vial for all (also QCs)
+idx <- duplicated(pd$Vial)
+idx[pd$sample_type == "blank"] <- FALSE
+full <- full[!idx]
+
+sampleData(full)|> 
+    as.data.frame() |> 
+    head() |>
+    pandoc.table(style = "simple", caption = "Samples from the data set.")
+
+# filter retention time 
+full <- filterRt(full, c(40, 840))
+```
+
+```{r parallel-process}
+#' Set up parallel processing using 4 cores
+if (.Platform$OS.type == "unix") {
+    register(MulticoreParam(6))
+} else
+    register(SnowParam(6))
+```
+
+```{r echo=TRUE}
+#' Define colors for the different sample types
+leg_sample <- brewer.pal(8, name = "Set1")[c(2, 3, 4)]
+names(leg_sample) <- unique(sampleData(full)$sample_type)
+col_sample <- leg_sample[sampleData(full)$sample_type]
+
+#' Define colors for the differenT device
+leg_device<- brewer.pal(8, name = "Dark2")[c(4, 1, 5, 3, 6, 2)]
+names(leg_device) <- c("NA", "Whatman", "Capitainer", "Mitra", "Plasma", "Mix")
+col_device <- leg_device[sampleData(full)$device]
+
+# color for QCs 
+leg_qc <- brewer.pal(12, name = "Set3")[1:12]
+names(leg_qc) <- paste0("QC", 1:6)
+
+# color for devices ONLY 
+leg_device_only<- brewer.pal(8, name = "Dark2")[c(1, 5, 3, 6)]
+names(leg_device_only) <- c("Whatman", "Capitainer", "Mitra", "Plasma")
+```
+
+
+```{r echo=TRUE}
+#' Count the number of spectra with a specific MS level per file.
+spectra(full) |>
+    msLevel() |>
+    split(fromFile(full)) |>
+    lapply(table) |>
+    do.call(what = cbind)
+```
+
+```{r bps, eval=FALSE, fig.height=7, fig.width=12, include=FALSE}
+# set chunksise 
+chunksize <- 1000
+processingChunkSize(spectra(full)) <- chunksize
+
+#' Combining all spectra per file into a single spectrum
+bps <- spectra(full) |>
+    bin(binSize = 0.01) |>
+    combineSpectra(f = fromFile(full), intensityFun = max, ppm = 3)
+
+#' Calculate similarities between BPS
+sim_matrix <- compareSpectra(bps)
+
+#' Add rownames and colnames
+rownames(sim_matrix) <- colnames(sim_matrix) <- sampleData(full)$sample_id
+ann <- data.frame(devices = sampleData(full)$device)
+rownames(ann) <- rownames(sim_matrix)
+
+#' plot the heatmap
+pheatmap(sim_matrix, annotation_col = ann,
+         annotation_colors = list(devices = leg_device), show_rownames = F, 
+         show_colnames = F)
+```
+
+- tic heatmap 
+
+```{r heatmap1, eval=FALSE, include=FALSE}
+#' Total ion chromatogram
+tic <- chromatogram(full, aggregationFun = "sum", chunkSize = 6) |>
+  bin(binSize = 2)
+
+#' Calculate similarity (Pearson correlation) between BPCs
+ticmap <- do.call(cbind, lapply(tic, intensity)) |>
+  cor()
+
+rownames(ticmap) <- colnames(ticmap) <- sampleData(full)$sample_id
+ann <- data.frame(devices = sampleData(full)$device)
+rownames(ann) <- rownames(ticmap)
+
+#' plot the heatmap
+pheatmap(ticmap, annotation_col = ann,
+         annotation_colors = list(devices = leg_device), show_rownames = F, 
+         show_colnames = F)
+```
+
+# internal standard 
+
+these have been spiked in all samples
+
+```{r is}
+is <- read.xlsx("IS.xlsx") |>
+    as.data.frame()
+
+is$rtmin <- is$rt - 25
+is$rtmax <- is$rt + 25
+
+is$mzmin <- is$mz - 0.005
+is$mzmax <- is$mz + 0.005
+
+is
+```
+
+# chromatogrpahic data
+
+- overall: BPC 
+```{r bpc1, echo=TRUE}
+#QC 
+idx_QC <- sampleData(full)$sample_type == "QC"
+chromatogram(full[idx_QC], aggregationFun = "max", msLevel = 1, chunkSize = 6) |>
+    plot(main = "BPC QC", col = leg_qc, lwd = 1)
+
+# all sample 
+chromatogram(full, aggregationFun = "max", msLevel = 1, chunkSize = 6) |>
+    plot(main = "BPC", col = col_sample, lwd = 1)
+grid()
+legend("topright", col = leg_sample,
+       legend = names(leg_sample), lty = 1, horiz = TRUE, bty = "n")
+
+chromatogram(full, aggregationFun = "max", msLevel = 1, chunkSize = 6) |>
+    plot(main = "BPC", col = col_device, lwd = 1)
+grid()
+legend("topright", col = leg_device,
+       legend = names(leg_device), lty = 1, horiz = TRUE, bty = "n")
+```
+
+filter ? and plot again ?
+
+- specific: internal standard eics 
+
+```{r eic1, echo=FALSE}
+# plot eic and coloring per device - see if I need to extend rtmin and rtmax 
+# full
+eics <- chromatogram(
+    full,
+    rt = as.matrix(is[, c("rtmin", "rtmax")]),
+    mz = as.matrix(is[, c("mzmin", "mzmax")]), msLevel = 1, chunkSize = 6)
+
+fData(eics)$mz <- is$mz
+fData(eics)$rt <- is$rt
+fData(eics)$name <- is$name
+rownames(eics) <- is$name
+
+for (i in seq_len(nrow(is))) {
+    plot(eics[i, ], main = fData(eics)$name[i],
+         col = paste0(col_sample, 80))
+    grid()
+    legend("topright", col = leg_sample,
+           legend = names(leg_sample), lty = 1)
+    abline(v = fData(eics)$rt[i], col = "red", lty = 3)
+}
+
+eics <- chromatogram(
+    full[idx_QC],
+    rt = as.matrix(is[, c("rtmin", "rtmax")]),
+    mz = as.matrix(is[, c("mzmin", "mzmax")]), msLevel = 1, chunkSize = 6)
+
+fData(eics)$mz <- is$mz
+fData(eics)$rt <- is$rt
+fData(eics)$name <- is$name
+rownames(eics) <- is$name
+
+for (i in seq_len(nrow(is))) {
+    plot(eics[i, ], main = fData(eics)$name[i],
+         col = leg_qc)
+    grid()
+    legend("topright", col = leg_qc,
+           legend = names(leg_qc), lty = 1)
+    abline(v = fData(eics)$rt[i], col = "red", lty = 3)
+}
+```
+
+# preprocessing
+
+```{r pp, eval=!file.exists("full_pp.RData")}
+#' Peakpicking
+param <- CentWaveParam(peakwidth = c(10, 20), ppm = 50, integrate = 2, 
+                       snthresh = 5, extendLengthMSW = TRUE)
+
+full <- findChromPeaks(full, param = param, chunkSize = 6L)
+
+save(full, file = "full_pp.RData")
+```
+
+
+```{r}
+load("full_pp.RData")
+```
+
+Refinement: merge neighboring peaks. Remove artifacts that can be created
+during peak picking.
+
+```{r refine, eval=!file.exists("full_ref.RData")}
+param <- MergeNeighboringPeaksParam(expandRt = 10,
+                                    expandMz = 0.01,
+                                    ppm = 10,
+                                    minProp = 0.75)
+
+full <- refineChromPeaks(full, param = param, chunkSize = 6)
+
+chromPeakData(full)$merged |>
+                      table()
+
+save(full, file = "full_ref.RData")
+```
+
+```{r eic2, eval=FALSE, include=FALSE}
+load("full_ref.RData")
+#full
+eics <- chromatogram(
+    full,
+    rt = as.matrix(is[, c("rtmin", "rtmax")]),
+    mz = as.matrix(is[, c("mzmin", "mzmax")]),
+    msLevel = 1,
+    chunkSize = 6)
+
+fData(eics)$mz <- is$mz
+fData(eics)$rt <- is$rt
+fData(eics)$name <- is$name
+rownames(eics) <- is$name
+
+for (i in seq_len(nrow(is))) {
+    plot(eics[i, ], main = fData(eics)$name[i],
+         col = paste0(col_sample, 80),
+         peakBg = paste0(col_sample, 40)[chromPeaks(eics[i])[, "column"]])
+    grid()
+    legend("topright", col = leg_sample,
+           legend = names(leg_sample), lty = 1)
+    abline(v = fData(eics)$rt[i], col = "red", lty = 3)
+}
+
+# qc 
+eics <- chromatogram(
+    full[idx_QC],
+    rt = as.matrix(is[, c("rtmin", "rtmax")]),
+    mz = as.matrix(is[, c("mzmin", "mzmax")]),
+    msLevel = 1,
+    chunkSize = 6)
+
+fData(eics)$mz <- is$mz
+fData(eics)$rt <- is$rt
+fData(eics)$name <- is$name
+rownames(eics) <- is$name
+
+for (i in seq_len(nrow(is))) {
+    plot(eics[i, ], main = fData(eics)$name[i],
+         col = leg_qc,
+         peakBg = paste0(leg_qc, 40)[chromPeaks(eics[i])[, "column"]])
+    grid()
+    legend("topright", col = leg_qc,,
+           legend = names(leg_qc), lty = 1)
+    abline(v = fData(eics)$rt[i], col = "red", lty = 3)
+}
+```
+
+# alignment 
+
+I would first try automatic selection of anchor peaks. If it does not work 
+properly then i will introduce the manual generation  of apeak group matrix 
+(see full for the code)
+Also could create that matrix based on correspondence results, plot the features
+and if look could use them for alignemnt. 
+
+before alignment 
+
+```{r eval=FALSE, include=FALSE}
+# BPC qc 
+chromatogram(full[idx_QC], aggregationFun = "max",
+             msLevel = 1, chunkSize = 6) |>
+    plot(main = "BPC QC", col = col_sample[2], lwd = 0.8, peakType = "none")
+```
+
+- using QC, for correspondence and subset alignemnt 
+
+```{r echo=TRUE, eval=!file.exists("full_align.RData")}
+f <- factor(sampleData(full)$sample_type, levels = "QC")
+param <- PeakDensityParam(sampleGroups = f,
+                          minFraction = 5/6, 
+                          binSize = 0.01, ppm = 10,
+                          bw = 4)
+full <- groupChromPeaks(full, param = param)
+
+#' align the data 
+subset <- which(idx_QC)
+param <- PeakGroupsParam(minFraction = 0.9, extraPeaks = 50, span = 0.5,
+                         subsetAdjust = "average",
+                         subset = subset)
+
+#' Input in the function
+full <- adjustRtime(full, param = param)
+
+#' See retention time variation
+plotAdjustedRtime(full, col = paste0(col_sample, 80), peakGroupsPch = 1)
+grid()
+legend("topright", col = leg_sample,
+       legend = names(leg_sample), lty = 1, bty = "n")
+```
+
+- evaluate 1
+```{r eval=FALSE, include=FALSE}
+full <- applyAdjustedRtime(full)
+# BPC qc 
+chromatogram(full[idx_QC], aggregationFun = "max",
+             msLevel = 1, chunkSize = 6) |>
+    plot(main = "BPC QC after alignment", col = leg_qc, lwd = 1, 
+         peakType = "none")
+
+#eic full
+eics <- chromatogram(
+    full,
+    rt = as.matrix(is[, c("rtmin", "rtmax")]),
+    mz = as.matrix(is[, c("mzmin", "mzmax")]),
+    msLevel = 1,
+    chunkSize = 6)
+
+fData(eics)$mz <- is$mz
+fData(eics)$rt <- is$rt
+fData(eics)$name <- is$name
+rownames(eics) <- is$name
+
+for (i in seq_len(nrow(is))) {
+    plot(eics[i, ], main = fData(eics)$name[i],
+         col = paste0(col_sample, 80),
+         peakBg = paste0(col_sample, 40)[chromPeaks(eics[i])[, "column"]])
+    grid()
+    legend("topright", col = leg_sample,
+           legend = names(leg_sample), lty = 1)
+    abline(v = fData(eics)$rt[i], col = "red", lty = 3)
+}
+
+# eics QC 
+eics <- chromatogram(
+    full[idx_QC],
+    rt = as.matrix(is[, c("rtmin", "rtmax")]),
+    mz = as.matrix(is[, c("mzmin", "mzmax")]),
+    msLevel = 1,
+    chunkSize = 6)
+
+fData(eics)$mz <- is$mz
+fData(eics)$rt <- is$rt
+fData(eics)$name <- is$name
+rownames(eics) <- is$name
+
+for (i in seq_len(nrow(is))) {
+    plot(eics[i, ], main = fData(eics)$name[i],
+         col = paste0(leg_qc, 80))
+    grid()
+    legend("topright", col = leg_qc,
+           legend = names(leg_qc), lty = 1)
+    abline(v = fData(eics)$rt[i], col = "red", lty = 3)
+}
+```
+
+not good enough now do a second round this time targetting the shitty area
+
+```{r alignment_using_selected_standards, echo=TRUE, eval=!file.exists("full_align.RData")}
+#' creating matrix for rt alignment
+standard <- read.xlsx("alignment.xlsx") |>
+    as.data.frame()
+standard <- standard[order(standard$rt),]
+
+#lets also plot all of them before and after alignmet
+standard$rtmin <- standard$rt - 25
+standard$rtmax <- standard$rt + 25
+
+standard$mzmin <- standard$mz - 0.005
+standard$mzmax <- standard$mz + 0.005
+
+
+eics <- chromatogram(
+    full[idx_QC],
+    rt = as.matrix(standard[, c("rtmin", "rtmax")]),
+    mz = as.matrix(standard[, c("mzmin", "mzmax")]),
+    msLevel = 1,
+    chunkSize = 6)
+
+fData(eics)$mz <- standard$mz
+fData(eics)$rt <- standard$rt
+fData(eics)$name <- standard$name
+rownames(eics) <- standard$name
+
+dir <- paste0("eic_", format(Sys.time(), "%Y-%m-%d_%H-%M-%S/before_alignment/"))
+dir.create(dir, showWarnings = FALSE, recursive = TRUE)
+
+for (i in seq_len(nrow(standard))) {
+    png(paste0(dir, standard$name[i], ".png"))
+    plot(eics[i, ], main = fData(eics)$name[i],
+         col = paste0(leg_qc, 80))
+    grid()
+    legend("topright", col = leg_qc,
+           legend = names(leg_qc), lty = 1)
+    abline(v = fData(eics)$rt[i], col = "red", lty = 3)
+    dev.off()
+}
+
+#' loop results
+ID_table <- matrix(
+    ncol = length(full),
+    nrow = nrow(standard),
+    dimnames = list(c(row.names(standard)), c(seq_len(length(full))))
+)
+
+cpks <- as.data.frame(chromPeaks(full))
+cpks$peak_id <- rownames(cpks)
+
+library(MetaboAnnotation)
+
+#' get ID for peaks matching with IS for each samples (minus Blanks)
+for (i in which(sampleData(full)$sample_type != "blank")) {
+    tmp <- cpks[cpks$sample == i, ]
+    match_intern_standard <- matchValues(
+        query = standard,
+        target = tmp,
+        mzColname = c("mz", "mz"),
+        rtColname = c("rt", "rt" ),
+        param = MzRtParam(ppm = 0, tolerance = 0.01, toleranceRt = 20))
+    #' Select the chrom peak with the largest apex signal
+    match_intern_standard <- filterMatches(
+        match_intern_standard, SingleMatchParam(duplicates = "top_ranked",
+                                                decreasing = TRUE,
+                                                column = "target_maxo"))
+    ID_table[, i] <- match_intern_standard$target_peak_id
+}
+
+#' Function to create rt dataframe;
+#' avoiding subset with NA turns out to be much more efficient
+rtdf <- function(full, ID_table) {
+    index <- as.vector(ID_table)
+    nna <- !is.na(index)
+    x <- rep(NA, length(index))
+    x[nna] <- chromPeaks(full)[index[nna], "rt"]
+    dim(x) <- dim(ID_table)
+    rownames(x) <- rownames(ID_table)
+    colnames(x) <- colnames(ID_table)
+    x
+}
+
+#' run for full
+final_table <- rtdf(full, ID_table)
+
+#' remove blanks 
+blank_idx <- sampleData(full)$sample_type == "blank"
+final_table <- final_table[, !blank_idx]
+```
+
+```{r echo=TRUE, eval=!file.exists("full_align.RData")}
+final_table <- final_table[order(rowMedians(final_table, na.rm = TRUE)), ]
+
+param <- PeakGroupsParam(span = 0.5,
+                         peakGroupsMatrix = final_table,
+                         subset = which(!blank_idx),
+                         subsetAdjust = "average")
+full <- adjustRtime(full, param = param, chunkSize = 6L)
+
+plotAdjustedRtime(full, col = paste0(col_sample, 80), peakGroupsPch = 1)
+```
+
+```{r echo=TRUE, eval=!file.exists("full_align.RData")}
+full <- applyAdjustedRtime(full)
+#bpc 
+chromatogram(full[idx_QC], aggregationFun = "max", msLevel = 1, chunkSize = 6) |>
+    plot(main = "BPC", col = leg_qc, lwd = 1, peakType = "none")
+
+#check eic full 
+eics <- chromatogram(
+    full,
+    rt = as.matrix(is[, c("rtmin", "rtmax")]),
+    mz = as.matrix(is[, c("mzmin", "mzmax")]),
+    msLevel = 1,
+    chunkSize = 6)
+
+fData(eics)$mz <- is$mz
+fData(eics)$rt <- is$rt
+fData(eics)$name <- is$name
+rownames(eics) <- is$name
+
+for (i in seq_len(nrow(is))) {
+    plot(eics[i, ], main = fData(eics)$name[i],
+         col = paste0(col_sample, 80),
+         peakBg = paste0(col_sample, 40)[chromPeaks(eics[i])[, "column"]])
+    grid()
+    legend("topright", col = leg_sample,
+           legend = names(leg_sample), lty = 1)
+    abline(v = fData(eics)$rt[i], col = "red", lty = 3)
+}
+
+# eic qc
+eics <- chromatogram(
+    full[idx_QC],
+    rt = as.matrix(is[, c("rtmin", "rtmax")]),
+    mz = as.matrix(is[, c("mzmin", "mzmax")]),
+    msLevel = 1,
+    chunkSize = 6)
+
+fData(eics)$mz <- is$mz
+fData(eics)$rt <- is$rt
+fData(eics)$name <- is$name
+rownames(eics) <- is$name
+
+for (i in seq_len(nrow(is))) {
+    plot(eics[i, ], main = fData(eics)$name[i],
+         col = paste0(leg_qc, 80))
+    grid()
+    legend("topright", col = leg_qc,
+           legend = names(leg_qc), lty = 1)
+    abline(v = fData(eics)$rt[i], col = "red", lty = 3)
+}
+save(full, file = "full_align.RData")
+```
+
+```{r}
+load("full_align.RData")
+```
+
+```{r eval=FALSE, include=FALSE}
+#lets also lot all of them before and after alignment
+eics <- chromatogram(
+    full[idx_QC],
+    rt = as.matrix(standard[, c("rtmin", "rtmax")]),
+    mz = as.matrix(standard[, c("mzmin", "mzmax")]),
+    msLevel = 1,
+    chunkSize = 6)
+
+fData(eics)$mz <- standard$mz
+fData(eics)$rt <- standard$rt
+fData(eics)$name <- standard$name
+rownames(eics) <- standard$name
+
+dir <- paste0("eic_", format(Sys.time(), "%Y-%m-%d_%H-%M-%S/after_alignment/"))
+dir.create(dir, showWarnings = FALSE, recursive = TRUE)
+
+for (i in seq_len(nrow(standard))) {
+    png(paste0(dir, standard$name[i], ".png"))
+    plot(eics[i, ], main = fData(eics)$name[i],
+         col = paste0(leg_qc, 80))
+    grid()
+    legend("topright", col = leg_qc,
+           legend = names(leg_qc), lty = 1)
+    abline(v = fData(eics)$rt[i], col = "red", lty = 3)
+    dev.off()
+}
+```
+
+# correspondence 
+
+for correspondence, do per devices and remove blanks of course. what of QCs ? also remove them ? 
+
+```{r, eval=!file.exists("full_preprocessing.RData")}
+blank_idx <- sampleData(full)$sample_type == "blank"
+f <- factor(sampleData(full)$device)
+f[blank_idx] <- NA
+param <- PeakDensityParam(sampleGroups = f,
+                          minFraction = 0.5, 
+                          binSize = 0.01, ppm = 10,
+                          bw = 2)
+full <- groupChromPeaks(full, param = param)
+
+# where are the feature 
+table(cut(featureDefinitions(full)$rtmed, breaks = 10))
+
+# total number of features 
+nrow(featureDefinitions(full))
+```
+
+# gapfilling
+
+```{r, eval=!file.exists("full_preprocessing.RData")}
+#' Number of missing values
+sum(is.na(featureValues(full)))
+
+full <- fillChromPeaks(full, param = ChromPeakAreaParam(), chunkSize = 6)
+
+#' How many missing values after
+sum(is.na(featureValues(full)))
+```
+
+# flag features in blanks 
+
+```{r, eval=!file.exists("full_preprocessing.RData")}
+idx_blank <- sampleData(full)$sample_type == "blank"
+full <- filterFeatures(full, BlankFlag(blankIndex = idx_blank, qcIndex = idx_QC))
+
+featureDefinitions(full)$possible_contaminants[is.na(featureDefinitions(full)$possible_contaminants)] <- FALSE 
+featureDefinitions(full)$possible_contaminants <- as.logical(featureDefinitions(full)$possible_contaminants)
+```
+
+# summarized experiment 
+
+```{r, eval=!file.exists("full_preprocessing.RData")}
+library(SummarizedExperiment)
+
+res_full <- quantify(full, method = "sum", filled = FALSE)
+assays(res_full)$raw_filled <- featureValues(full, method = "sum",
+                                        filled = TRUE )
+
+# we actually remove flagged features data them for downstream analysis in the sumexp object
+nrow(res_full)
+res_full <- res_full[!featureDefinitions(full)$possible_contaminants, ]
+nrow(res_full)
+
+# save the data
+#full@spectra <- setBackend(full@spectra, MsBackendMemory())
+
+save(res_full, file = "SumExp_full_preprocessing.RData")
+save(full, file = "full_preprocessing.RData")
+```
+
+```{r}
+load(file = "SumExp_full_preprocessing.RData")
+load(file = "full_preprocessing.RData")
+
+#export data 
+de <- list(values = as.data.frame(featureValues(full)), definitions = featureDefinitions(full))
+write.xlsx(de, "feature_results.xlsx", rowNames = TRUE)
+```
+
+```{r echo=TRUE}
+#' Define colors for the different sample types
+leg_sample <- brewer.pal(8, name = "Set1")[c(2, 3, 4)]
+names(leg_sample) <- unique(sampleData(full)$sample_type)
+col_sample <- leg_sample[sampleData(full)$sample_type]
+
+#' Define colors for the differenT device
+leg_device<- brewer.pal(8, name = "Dark2")[c(4, 1, 5, 3, 6, 2)]
+names(leg_device) <- c("NA", "Whatman", "Capitainer", "Mitra", "Plasma", "Mix")
+col_device <- leg_device[sampleData(full)$device]
+
+# color for QCs 
+leg_qc <- brewer.pal(12, name = "Set3")[1:6]
+names(leg_qc) <- paste0("QC", 1:6)
+
+# color for devices ONLY 
+leg_device_only<- brewer.pal(8, name = "Set1")[c(2, 3, 4, 7)]
+names(leg_device_only) <- c("Whatman", "Capitainer", "Mitra", "Plasma")
+```
+
+## noise comparison 
+In general i think we should discuss how the comparison are done, i should
+probably introduce comparison within same sample also...  let's see
+
+```{r eval=FALSE, include=FALSE}
+# overall signal in the dataset 
+#' - for each file calculate the sum of intensities 
+background  <- spectra(full) |>
+    split(fromFile(full)) |>
+    lapply(tic) |>
+    lapply(sum) |>
+    unlist()
+
+# Overall signal that is in the chromatographic peaks detection 
+    # - check "into" definition first, mioght need to multiply it by something
+detected <- apply(assay(res_full), 2, function(x) sum(x, na.rm = TRUE))
+
+# substract and plot ? Also i'm removing blanks bc i think we don't need it 
+names(background) <- names(detected) <- res_full$device
+
+idx_bl_qc <- sampleData(full)$sample_type %in% c("blank", "QC")
+col_device_only <- leg_device_only[sampleData(full)$device[!idx_bl_qc]]
+#remove blanks
+noise <- background[!idx_bl_qc] - detected[!idx_bl_qc]
+
+f <- factor(names(noise), levels = unique(names(noise)))
+group <- split(noise, f)
+
+plot(NULL, xlim = c(1, length(group)), ylim = range(unlist(group)), 
+     xaxt = "n", xlab = "Devices", ylab = "Noise", 
+     main = "Noise comparison between Devices")
+for (i in seq_along(group)) {
+  points(rep(i, length(group[[i]])), group[[i]], pch = 19, col = leg_device_only[i])
+}
+axis(1, at = seq_along(group), labels = names(group))
+```
+
+# normalisation
+
+```{r}
+library(ggfortify)
+library(SummarizedExperiment)
+library(RColorBrewer)
+```
+
+PCA 
+
+```{r}
+#' Impute missing values using an uniform distribution
+na_unidis <- function(z) {
+    na <- is.na(z)
+    if (any(na)) {
+        min = min(z, na.rm = TRUE)
+        z[na] <- runif(sum(na), min = min/2, max = min)
+    }
+    z
+}
+
+#' Row-wise impute missing values and add the data as a new assay
+tmp <- apply(assay(res_full, "raw_filled"), MARGIN = 1, na_unidis)
+assays(res_full)$raw_filled_imputed <- t(tmp)
+```
+
+```{r unsupervised checks1, fig.height=5, fig.width=10, include=TRUE}
+#' Log2 transform and scale data
+vals <- assay(res_full, "raw_filled_imputed") |>
+    log2() |>
+    t() |>
+    scale(center = TRUE, scale = TRUE)
+
+#' Perform the PCA
+pca_res <- prcomp(vals, scale = FALSE, center = FALSE)
+
+#' Plot the results
+vals_st <- cbind(vals, device = res_full$device)
+pca_12 <- autoplot(pca_res, data = vals_st , colour = 'device', scale = 0) +
+    scale_color_manual(values = col_device)
+pca_34 <- autoplot(pca_res, data = vals_st, colour = 'device',
+                   x = 3, y = 4, scale = 0) +
+    scale_color_manual(values = col_device)
+grid.arrange(pca_12, pca_34, ncol = 2)
+```
+
+```{r fig.height=5, fig.width=10, include=TRUE}
+#plot by sampletype
+vals_st <- cbind(vals, sample_type = res_full$sample_type)
+pca_12 <- autoplot(pca_res, data = vals_st , colour = 'sample_type', scale = 0) +
+    scale_color_manual(values = col_sample)
+pca_34 <- autoplot(pca_res, data = vals_st, colour = 'sample_type',
+                   x = 3, y = 4, scale = 0) +
+    scale_color_manual(values = col_sample)
+grid.arrange(pca_12, pca_34, ncol = 2)
+```
+
+intensity distribution
+
+```{r}
+idx_blank <- sampleData(full)$sample_type == "blank"
+leg_device<- brewer.pal(8, name = "Dark2")[c(1, 5, 3, 6, 2)]
+names(leg_device) <- c("Whatman", "Capitainer", "Mitra", "Plasma", "Mix")
+col_device <- leg_device[sampleData(full)$device[!idx_blank]]
+```
+
+```{r}
+layout(mat = matrix(1:3, ncol = 1), height = c(0.2, 0.2, 0.8))
+
+par(mar = c(0.2, 4.5, 0.2, 3))
+barplot(apply(assay(res_full, "raw")[,!idx_blank], MARGIN = 2, 
+              function(x) sum(!is.na(x))),
+        col = col_device, ylab = "features raw data", xaxt = "n", 
+        space = 0.012)
+barplot(apply(assay(res_full, "raw_filled")[,!idx_blank], MARGIN = 2, 
+              function(x) sum(!is.na(x))),
+        col = col_device, ylab = "features filled data", xaxt = "n", 
+        space = 0.012)
+boxplot(log2(assay(res_full, "raw_filled")[,!idx_blank]), xaxt = "n",
+        ylab = expression(log[2]~abundance~filled~data),
+        col = col_device, outline=FALSE, medlty = "blank", 
+        border = col_device, varwidth = TRUE)
+points(colMedians(log2(assay(res_full, "raw_filled")[,!idx_blank]), 
+                  na.rm = TRUE), type = "b", pch = 16) 
+grid(nx = NA, ny = NULL)
+legend("topright", col = leg_device,
+       legend = names(leg_device), lty=1, lwd = 2, xpd = TRUE, ncol = 4, 
+       cex = 0.8,  bty = "n")
+```
+
+RLA
+
+```{r}
+par(mfrow = c(1, 1), mar = c(0.2, 4.5, 2.5, 3))
+boxplot(rowRla(assay(res_full, "raw_filled")[, !idx_blank],
+               group = res_full$device[!idx_blank]),
+        cex = 0.5, pch = 16, boxwex = 1,
+        col = col_device, ylab = "RLA",
+        border = paste0(col_device, 40),
+        outline = FALSE, xaxt = "n", main = "Relative log abundance", 
+        cex.main = 1)
+grid(nx = NA, ny = NULL)
+abline(h = 0, lty=3, lwd = 1, col = "black")
+legend("topright", col = leg_device,
+       legend = names(leg_device), lty=1, lwd = 2, xpd = TRUE, ncol = 3,
+       cex = 0.8,  bty = "n")
+```
+
+median scaling 
+
+```{r eval=FALSE, include=FALSE}
+#' Compute median and generate normalization factor, we all compute together, 
+#' they are part of the same experiment as we believe the same technical 
+#' variance is applied here
+mdns <- apply(assay(res_full, "raw_filled"), MARGIN = 2, median, na.rm = TRUE)
+nf_mdn <- mdns / median(mdns[!idx_blank]) # To not take blank data in account
+assays(res_full)$norm <- sweep(assay(res_full, "raw_filled"), MARGIN = 2, 
+                               nf_mdn, '/')
+```
+
+results
+
+```{r eval=FALSE, fig.height=7, fig.width=8, include=FALSE}
+par(mfrow = c(2, 1), mar = c(1, 4, 3, 1))
+
+boxplot(rowRla(assay(res_full, "raw_filled")[, !idx_blank],
+               group = res_full$device[!idx_blank]),
+        cex = 0.5, pch = 16, boxwex = 1,
+        col = col_device, ylab = "RLA",
+        border = paste0(col_device, 40),
+        outline = FALSE, xaxt = "n", 
+        main = "Relative log abundance before normalisation", 
+        cex.main = 1)
+grid(nx = NA, ny = NULL)
+abline(h = 0, lty=3, lwd = 1, col = "black")
+legend("topright", col = leg_device,
+       legend = names(leg_device), lty=1, lwd = 2, xpd = TRUE, ncol = 3,
+       cex = 0.8,  bty = "n")
+boxplot(rowRla(assay(res_full, "norm")[, !idx_blank],
+               group = res_full$device[!idx_blank]),
+        cex = 0.5, pch = 16, boxwex = 1,
+        col = col_device, ylab = "RLA",
+        border = paste0(col_device, 40),
+        outline = FALSE, xaxt = "n", 
+        main = "Relative log abundance after normalization",
+        cex.main = 1, ylim = c(-4.0 , 2.0))
+grid(nx = NA, ny = NULL)
+abline(h = 0, lty=3, lwd = 1, col = "black")
+legend("topright", col = leg_device,
+       legend = names(leg_device), lty=1, lwd = 2, xpd = TRUE, ncol = 3,
+       cex = 0.8,  bty = "n")
+```
+
+```{r eval=FALSE, include=FALSE}
+#' Define colors for the differenT device
+leg_device<- brewer.pal(8, name = "Dark2")[c(4, 1, 5, 3, 6, 2)]
+names(leg_device) <- c("NA", "Whatman", "Capitainer", "Mitra", "Plasma", "Mix")
+col_device <- leg_device[sampleData(full)$device]
+```
+
+PCA again 
+
+```{r eval=FALSE, fig.height=5, fig.width=10, include=FALSE}
+#' impute 
+tmp <- apply(assay(res_full, "norm"), MARGIN = 1, na_unidis)
+assays(res_full)$norm_imputed <- t(tmp)
+
+#' Log2 transform and scale data
+vals <- assay(res_full, "norm_imputed") |>
+    log2() |>
+    t() |>
+    scale(center = TRUE, scale = TRUE)
+
+#' Perform the PCA
+pca_res <- prcomp(vals, scale = FALSE, center = FALSE)
+
+#' Plot the results
+vals_st <- cbind(vals, device = res_full$device)
+pca_12 <- autoplot(pca_res, data = vals_st , colour = 'device', scale = 0) +
+    scale_color_manual(values = col_device)
+pca_34 <- autoplot(pca_res, data = vals_st, colour = 'device',
+                   x = 3, y = 4, scale = 0) +
+    scale_color_manual(values = col_device) 
+grid.arrange(pca_12, pca_34, ncol = 2)
+```
+
+```{r eval=FALSE, fig.height=5, fig.width=10, include=FALSE}
+# plot using injection_index
+vals_st <- cbind(vals, injection_index = res_full$injection_index)
+
+pca_12 <- autoplot(pca_res, data = vals_st , colour = 'injection_index', scale = 0) 
+pca_34 <- autoplot(pca_res, data = vals_st, colour = 'injection_index',
+                   x = 3, y = 4, scale = 0) 
+grid.arrange(pca_12, pca_34, ncol = 2)
+```
+
+```{r eval=FALSE, fig.height=5, fig.width=10, include=FALSE}
+#plot sample type
+vals_st <- cbind(vals, sample_type = res_full$sample_type)
+pca_12 <- autoplot(pca_res, data = vals_st , colour = 'sample_type', scale = 0) +
+    scale_color_manual(values = col_sample)
+pca_34 <- autoplot(pca_res, data = vals_st, colour = 'sample_type',
+                   x = 3, y = 4, scale = 0) +
+    scale_color_manual(values = col_sample)
+grid.arrange(pca_12, pca_34, ncol = 2)
+```
+
+```{r}
+# indices
+qc_idx <- res_full$sample_type == "QC"
+study_idx <- res_full$sample_type == "sample"
+idx_m <- res_full$device == "Mitra" & res_full$sample_type != "blank"
+idx_c <- res_full$device == "Capitainer" & res_full$sample_type != "blank"
+idx_p <- res_full$device == "Plasma" & res_full$sample_type != "blank"
+idx_w <- res_full$device == "Whatman" & res_full$sample_type != "blank"
+
+# Compute Rsds on  all data per devices
+sample_res <- cbind(
+    Raw_QC = rowRsd(assay(res_full, "raw_filled")[, qc_idx]),
+    Raw_Study = rowRsd(assay(res_full, "raw_filled")[, study_idx]),
+    Raw_Mitra = rowRsd(assay(res_full, "raw_filled")[, idx_m]),
+    Raw_Capitainer = rowRsd(assay(res_full, "raw_filled")[, idx_c]),
+    Raw_Plasma = rowRsd(assay(res_full, "raw_filled")[, idx_p]),
+    Raw_Whatman = rowRsd(assay(res_full, "raw_filled")[, idx_w]))
+
+#' Compute quantile for better data visualization
+res_df <- data.frame(
+    QC = quantile(sample_res[, "Raw_QC"], na.rm = TRUE),
+    Study = quantile(sample_res[, "Raw_Study"], na.rm = TRUE),
+    Mitra = quantile(sample_res[, "Raw_Mitra"], na.rm = TRUE),
+    Capitainer = quantile(sample_res[, "Raw_Capitainer"], na.rm = TRUE),
+    Plasma = quantile(sample_res[, "Raw_Plasma"], na.rm = TRUE),
+    Whatman = quantile(sample_res[, "Raw_Whatman"], na.rm = TRUE))
+
+cpt <- paste0("Distribution of RSD values across samples for the raw and ",
+              "normalized data.")
+pandoc.table(res_df, style = "rmarkdown", caption = cpt, split.table = Inf)
+```
+
+Very nice because clear decrease in RSDs after normalization in QCs but not in
+study sample which is what we want. 
+
+# Comparison after preprocessing
+
+remove blanks now
+
+```{r}
+blank <- full[sampleData(full)$sample_type == "blank", keepFeatures = TRUE]
+res_blank <- res_full[, res_full$sample_type == "blank"]
+
+QC <- full[sampleData(full)$sample_type == "QC", keepFeatures = TRUE]
+res_QC <- res_full[, res_full$sample_type == "QC"]
+
+full <- full[!sampleData(full)$sample_type %in% c("blank", "QC"),
+             keepFeatures = TRUE]
+res_full <- res_full[, !res_full$sample_type %in% c("blank", "QC")]
+```
+
+```{r echo=TRUE}
+#' Define colors for the differenT device
+leg_device <- brewer.pal(8, name = "Set1")[c(2, 3, 4, 7)]
+names(leg_device) <- c("Whatman", "Capitainer", "Mitra", "Plasma")
+col_device <- leg_device[sampleData(full)$device]
+```
+
+Plot all the PCA again without blanks and QCs
+
+```{r eval=FALSE, fig.height=5, fig.width=10, include=FALSE}
+#' Log2 transform and scale data
+vals <- assay(res_full, "raw_filled_imputed") |>
+    log2() |>
+    t() |>
+    scale(center = TRUE, scale = TRUE)
+
+#' Perform the PCA
+pca_res <- prcomp(vals, scale = FALSE, center = FALSE)
+
+#' Plot the results
+
+vals_st <- cbind(vals, device = res_full$device)
+pca_12 <- autoplot(pca_res, data = vals_st , colour = 'device', scale = 0) +
+    scale_color_manual(values = col_device_only)
+pca_34 <- autoplot(pca_res, data = vals_st, colour = 'device',
+                   x = 3, y = 4, scale = 0) +
+    scale_color_manual(values = col_device_only)
+
+grid.arrange(pca_12, pca_34, ncol = 2)
+```
+
+```{r eval=FALSE, fig.height=5, fig.width=10, include=FALSE}
+#' check injection index
+vals_st <- cbind(vals, injection_index = res_full$injection_index)
+
+pca_12 <- autoplot(pca_res, data = vals_st , colour = 'injection_index', scale = 0)
+pca_34 <- autoplot(pca_res, data = vals_st, colour = 'injection_index',
+                   x = 3, y = 4, scale = 0)
+grid.arrange(pca_12, pca_34, ncol = 2)
+```
+
+```{r eval=FALSE, fig.height=5, fig.width=10, include=FALSE}
+#' check injection index
+res_full$injection <- duplicated(res_full$Vial)
+
+vals_st <- cbind(vals, injection = res_full$injection)
+
+pca_12 <- autoplot(pca_res, data = vals_st , colour = 'injection', scale = 0) +
+    theme(legend.position = "none")
+pca_34 <- autoplot(pca_res, data = vals_st, colour = 'injection',
+                   x = 3, y = 4, scale = 0) +
+    theme(legend.position = "none")
+grid.arrange(pca_12, pca_34, ncol = 2)
+```
+
+- evaluate QC 
+
+```{r eval=FALSE, fig.height=5, fig.width=10, include=FALSE}
+#' Log2 transform and scale data
+vals <- assay(res_QC, "norm_imputed") |>
+    log2() |>
+    t() |>
+    scale(center = TRUE, scale = TRUE)
+
+colData(res_QC)$injection <- rep(c(1,2), ncol(res_QC)/2)
+
+#' Perform the PCA
+pca_res <- prcomp(vals, scale = FALSE, center = FALSE)
+
+#' Plot the results
+vals_st <- cbind(vals, injection = res_QC$injection)
+pca_12 <- autoplot(pca_res, data = vals_st, colour = 'injection' ,scale = 0) +
+    theme(legend.position = "none")
+pca_34 <- autoplot(pca_res, data = vals_st, colour = 'injection',
+                   x = 3, y = 4, scale = 0) +
+    theme(legend.position = "none")
+
+grid.arrange(pca_12, pca_34, ncol = 2)
+```
+
+```{r eval=FALSE, include=FALSE}
+#' Log2 transform and scale data
+vals <- assay(res_QC, "raw_filled_imputed") |>
+    log2() |>
+    t() |>
+    scale(center = TRUE, scale = TRUE)
+
+#' Perform the PCA
+pca_res <- prcomp(vals, scale = FALSE, center = FALSE)
+
+#' Plot the results
+vals_st <- cbind(vals, injection = res_QC$injection)
+pca_12 <- autoplot(pca_res, data = vals_st, colour = 'injection', scale = 0) +
+    theme(legend.position = "none")
+pca_34 <- autoplot(pca_res, data = vals_st, colour = 'injection',
+                   x = 3, y = 4, scale = 0) +
+    theme(legend.position = "none")
+
+grid.arrange(pca_12, pca_34, ncol = 2)
+```
+
+- compare intensity of QC1 vs QC2 
+
+```{r eval=FALSE, fig.height=6, fig.width=5, include=FALSE}
+qc1 <- res_QC[, res_QC$injection == 1]
+qc2 <- res_QC[, res_QC$injection == 2]
+
+qc1_int <- apply(assay(qc1, "norm"), MARGIN = 1, mean, na.rm = TRUE)
+qc2_int <- apply(assay(qc2, "norm"), MARGIN = 1, mean, na.rm = TRUE)
+
+combine_df <- data.frame(QC1 = qc1_int, QC2 = qc2_int)
+
+par(mfrow = c(2, 1), mar = c(1, 4, 3, 1))
+barplot(apply(is.na(combine_df),MARGIN = 2, sum), col =  c("blue", "lightblue"), 
+        ylab = "Number of missing values", xaxt = "n", main = "QC1 vs QC2")
+boxplot(log2(combine_df), col =  c("blue", "lightblue"), 
+        ylab = "Log2 intensity", xaxt = "n", main = "QC1 vs QC2")
+```
+
+
+```{r eval=FALSE, fig.height=6, fig.width=5, include=FALSE}
+qc1 <- res_QC[, res_QC$injection == 1]
+qc2 <- res_QC[, res_QC$injection == 2]
+
+qc1_int <- apply(assay(qc1, "raw_filled"), MARGIN = 1, mean, na.rm = TRUE)
+qc2_int <- apply(assay(qc2, "raw_filled"), MARGIN = 1, mean, na.rm = TRUE)
+
+combine_df <- data.frame(QC1 = qc1_int, QC2 = qc2_int)
+
+par(mfrow = c(2, 1), mar = c(1, 4, 3, 1))
+barplot(apply(is.na(combine_df),MARGIN = 2, sum), col = c("blue", "lightblue"), 
+        ylab = "Number of missing values", xaxt = "n", main = "QC1 vs QC2")
+boxplot(log2(combine_df), col = c("blue", "lightblue"), 
+        ylab = "Log2 intensity", xaxt = "n", main = "QC1 vs QC2")
+```
+
+- intensity vs injection index : just plot the QCs in order ? 
+
+```{r eval=FALSE, fig.height=6, fig.width=5, include=FALSE}
+par(mar = c(4, 4, 3, 2))
+boxplot(log2(assay(res_QC, "raw_filled")),
+        ylab = expression(log[2]~abundance~filled~data), xaxt = "n",
+        col =  c("blue", "lightblue"), outline=FALSE, medlty = "blank", 
+        border =  c("blue", "lightblue"), varwidth = TRUE, 
+        main = "Raw filled data", xlab = "Injection order")
+points(colMedians(log2(assay(res_QC, "raw_filled")), 
+                  na.rm = TRUE), type = "b", pch = 16) 
+grid(nx = NA, ny = NULL)
+axis(1, labels = FALSE)
+
+boxplot(log2(assay(res_QC, "norm")), xaxt = "n",
+        ylab = expression(log[2]~abundance~filled~data),
+        col =  c("blue", "lightblue"), outline=FALSE, medlty = "blank", 
+        border =  c("blue", "lightblue"), varwidth = TRUE,
+        main = "Normalised data")
+points(colMedians(log2(assay(res_QC, "norm")), 
+                  na.rm = TRUE), type = "b", pch = 16)
+grid(nx = NA, ny = NULL)
+```
+
+
+#poster plots 
+
+- summary plot: the plot below is one of the summary plot that compare results
+after prepossessing and normalization.
+
+```{r echo=TRUE, fig.height=8, fig.width=5}
+# Intensity and missing values 
+res_m <- res_full[, res_full$device == "Mitra"]
+res_c <- res_full[, res_full$device == "Capitainer"]
+res_w <- res_full[, res_full$device == "Whatman"]
+res_p <- res_full[, res_full$device == "Plasma"]
+
+intensity <- cbind(
+    Whatman = log2(as.numeric(assay(res_w, "raw_filled"))),
+    Capitainer = log2(as.numeric(assay(res_c, "raw_filled"))),
+    Mitra = log2(as.numeric(assay(res_m, "raw_filled"))),
+    Plasma = log2(as.numeric(assay(res_p, "raw_filled")))
+)
+
+idx_fts <- cbind(Whatman = rowSums(is.na(assay(res_w, "raw_filled"))) < 10,
+                 Capitainer = rowSums(is.na(assay(res_c, "raw_filled"))) < 10,
+                 Mitra = rowSums(is.na(assay(res_m, "raw_filled"))) < 10,
+                 Plasma = rowSums(is.na(assay(res_p, "raw_filled"))) < 10)
+
+res_m <- res_m[rowSums(is.na(assay(res_m, "raw_filled"))) < 10,]
+res_c <- res_c[rowSums(is.na(assay(res_c, "raw_filled"))) < 10,]
+res_w <- res_w[rowSums(is.na(assay(res_w, "raw_filled"))) < 10, ]
+res_p <- res_p[rowSums(is.na(assay(res_p, "raw_filled"))) < 10,]
+
+num_features <- cbind(
+    Whatman = nrow(res_w), 
+    Capitainer = nrow(res_c),
+    Mitra = nrow(res_m),
+    Plasma = nrow(res_p)
+)
+
+#change code below
+percent_missing <- cbind(
+    Whatman = sum(is.na(assay(res_w, "raw")))/length(assay(res_w, "raw")) * 100, 
+    Capitainer = sum(is.na(assay(res_c, "raw")))/length(assay(res_c, "raw")) * 100,
+    Mitra = sum(is.na(assay(res_m, "raw")))/length(assay(res_m, "raw")) * 100,
+    Plasma = sum(is.na(assay(res_p, "raw")))/length(assay(res_p, "raw")) * 100
+)
+# Plot
+layout(mat = matrix(1:3, ncol = 1), height = c(0.3, 0.3, 0.8))
+par(mar = c(1, 4.5, 1, 3))
+barplot(colSums(num_features), col = leg_device, ylab = "Number of features", 
+        space = 0.05)
+barplot(c(percent_missing), ylab = "% of missing values", 
+        col = leg_device, space = 0.05, ylim = c(0, 60))
+vioplot(intensity, ylab = "Log2 intensity", col = leg_device,
+        space = 0.05)
+```
+
+```{r eval=FALSE, include=FALSE}
+cpt <- paste0("RSD values distributionacross samples for the ",
+              "normalized data for each solvent type.")
+pandoc.table(res_df, style = "rmarkdown", caption = cpt)
+```
+
+- number of features / intensity per rt slices 
+
+```{r echo=TRUE, fig.height=8, fig.width=8}
+# Bin features per RT slices
+vc <- rowData(res_full)$rtmed 
+breaks <- seq(0, max(vc, na.rm = TRUE) + 1, length.out = 15) |> 
+    round(0)
+cuts <- cut(vc, breaks = breaks, include.lowest = TRUE)
+
+table(cuts)
+
+num_features_solvent <- apply(idx_fts, MARGIN = 2, function(x) table(cuts[x]))
+
+idx_fts <- as.data.frame(idx_fts)
+
+ftc <-function(res_solvent, fts_idx) {
+    tmp <- rowSums(assay(res_solvent, "raw_filled"), na.rm = TRUE)
+    cuts_tmp <- cuts[fts_idx]
+    t <- split(tmp, cuts_tmp) |> 
+        lapply(sum, na.rm = TRUE, simplify = TRUE)
+    unlist(t)
+}
+
+intensity_solvent <- list(
+    Whatman = ftc(res_w, idx_fts$Whatman),
+    Capitainer = ftc(res_c, idx_fts$Capitainer),
+    Mitra = ftc(res_m, idx_fts$Mitra),
+    Plasma = ftc(res_p, idx_fts$Plasma)
+    )
+
+# Transform intensity to log2 scale
+intensity_solvent <- lapply(intensity_solvent, log2)
+
+# Plot
+layout(mat = matrix(1:2, ncol = 1), heights = c(0.5, 0.5))
+par(mar = c(0.5, 4.5, 2, 3))
+#
+# Plot number of features
+ylim_features <- c(0, max(unlist(num_features_solvent)))
+plot(num_features_solvent[,1], col = leg_device[1], ylab = "Number of features",
+     xlab = "", type = "b", pch = 16, xaxt = "n", ylim = ylim_features,
+     main = "Analysis along the RT axis for each devices")
+for (i in 2:ncol(num_features_solvent)) {
+  lines(num_features_solvent[,i], col = leg_device[i], type = "b", pch = 16)
+}
+axis(1, at = 1:length(num_features_solvent[,1]), labels = FALSE)
+grid()
+legend("top", legend = names(intensity_solvent), col = leg_device, pch = 16, 
+       cex = 1, horiz = TRUE, bty = "n")
+
+# Plot intensity
+par(mar = c(5, 4.5, 2, 3))
+ylim_intensity <- range(unlist(intensity_solvent))
+plot(intensity_solvent[[1]], type = "b", pch = 16, xlab = "",
+     ylab = "Log2 intensity", col = leg_device[1], xaxt = "n", ylim = ylim_intensity)
+for (i in 2:length(intensity_solvent)) {
+  lines(intensity_solvent[[i]], type = "b", pch = 16, col = leg_device[i])
+}
+axis(1, at = 1:length(intensity_solvent[[1]]), 
+     labels = names(intensity_solvent[[1]]), las = 2, cex.axis = 0.8)
+mtext("Retention time (s)", side = 1, line = 4, cex = 1)
+grid()
+```
+
+- medians of the medians
+
+```{r echo=TRUE, fig.height=8, fig.width=8}
+ftc <-function(res_solvent, fts_idx) {
+    tmp <- rowMedians(assay(res_solvent, "raw_filled"), na.rm = TRUE)
+    cuts_tmp <- cuts[fts_idx]
+    t <- split(tmp, cuts_tmp) |> 
+        lapply(median, na.rm = TRUE, simplify = TRUE)
+    unlist(t)
+}
+
+intensity_solvent <- list(
+    Whatman = ftc(res_w, idx_fts$Whatman),
+    Capitainer = ftc(res_c, idx_fts$Capitainer),
+    Mitra = ftc(res_m, idx_fts$Mitra),
+    Plasma = ftc(res_p, idx_fts$Plasma)
+    )
+
+# Transform intensity to log2 scale
+intensity_solvent <- lapply(intensity_solvent, log2)
+
+# Plot
+layout(mat = matrix(1:2, ncol = 1), heights = c(0.5, 0.5))
+par(mar = c(0.5, 4.5, 2, 3))
+#
+# Plot number of features
+ylim_features <- c(0, max(unlist(num_features_solvent)))
+plot(num_features_solvent[,1], col = leg_device[1], ylab = "Number of features",
+     xlab = "", type = "b", pch = 16, xaxt = "n", ylim = ylim_features,
+     main = "Analysis along the RT axis for each devices")
+for (i in 2:ncol(num_features_solvent)) {
+  lines(num_features_solvent[,i], col = leg_device[i], type = "b", pch = 16)
+}
+axis(1, at = 1:length(num_features_solvent[,1]), labels = FALSE)
+grid()
+legend("top", legend = names(intensity_solvent), col = leg_device, pch = 16, 
+       cex = 1, horiz = TRUE, bty = "n")
+
+# Plot intensity
+par(mar = c(5, 4.5, 2, 3))
+ylim_intensity <- range(unlist(intensity_solvent))
+plot(intensity_solvent[[1]], type = "b", pch = 16, xlab = "",
+     ylab = "Log2 intensity", col = leg_device[1], xaxt = "n", ylim = ylim_intensity)
+for (i in 2:length(intensity_solvent)) {
+  lines(intensity_solvent[[i]], type = "b", pch = 16, col = leg_device[i])
+}
+axis(1, at = 1:length(intensity_solvent[[1]]), 
+     labels = names(intensity_solvent[[1]]), las = 2, cex.axis = 0.8)
+mtext("Retention time (s)", side = 1, line = 4, cex = 1)
+grid()
+```
+
+- overlap of features between devices
+
+```{r echo=TRUE, fig.height=5, fig.width=8}
+# Create a data frame for the UpSet plot
+upset_df <- lapply(idx_fts, as.integer)
+
+# Plot the UpSet plot
+library(UpSetR)
+upset(as.data.frame(upset_df), sets = c("Whatman", "Capitainer", "Mitra", "Plasma"),
+      sets.bar.color = leg_device,  mainbar.y.label = "Number of common features", 
+      keep.order = TRUE, mainbar.y.max= 4000)
+```
+
+# Annotation of the features
+
+```{r}
+# these need to be from the same file system
+full@spectra$file_index <- fromFile(full)
+```
+
+First need to prep spectra input 
+
+```{r prep-spectra,  eval = !file.exists("full_spectra.RData")}
+## dataset 
+# get spectra data and change their backend 
+idx_fts <- rownames(featureDefinitions(full)) %in% rownames(res_full)
+full_spectra <- featureSpectra(full, msLevel = 2L, features = idx_fts) # not annotating for contamination
+#' Remove peaks with an intensity below 5% or the spectra's BPC
+low_int <- function(x, ...) {
+    x > max(x, na.rm = TRUE) * 0.05
+}
+full_spectra <- filterIntensity(full_spectra, intensity = low_int)
+
+length(full_spectra)
+full_spectra$feature_id |>
+    table() |>
+    quantile()
+
+full_spectra |>
+    lengths() |>
+    quantile()
+
+#' Remove peaks with an m/z > the precursor m/z. For single-charged ions
+#' no fragment peak can have an m/z >= the precursor 
+full_spectra <- full_spectra |>
+    filterPrecursorPeaks(mz = "==", ppm = 50)
+
+#' Remove spectra with a single peak.
+full_spectra <- full_spectra[lengths(full_spectra) > 1]
+
+#' Add Spectra index 
+full_spectra$spectra_idx <- seq_len(length(full_spectra))
+
+full_spectra <-setBackend(full_spectra, MsBackendMemory())
+full_spectra <- applyProcessing(full_spectra)
+
+save(full_spectra, file = "full_spectra.RData")
+```
+
+```{r loadlibrary}
+library(MetaboAnnotation)
+library(MsBackendSql)
+library(RSQLite)
+load("full_spectra.RData")
+```
+
+```{r loadgnps}
+# "/home/plouail/MsBackendSql.GNPS.matchms.cleaned.v1.sqlite" for cluster
+#"C:/Users/plouail/Documents/MsBackendSql.GNPS.matchms.cleaned.v1.sqlite"
+#load gnps library
+mb <- Spectra(file.path("/home/plouail/pilot_study/MsBackendSql.GNPS.matchms.cleaned.v1.sqlite"),
+    drv = SQLite(), source = MsBackendOfflineSql())
+```
+
+```{r filtergnps, echo=TRUE}
+mb <- setBackend(mb, MsBackendMemory())
+low_int <- function(x, ...) {
+    x > max(x, na.rm = TRUE) * 0.05
+}
+## phili change this to use filterRanges()
+#' remove negative polarity 
+mb <- mb[mb$polarity == 1]
+
+#' Do same filtering as for our spectra data 
+mb <- filterIntensity(mb, intensity = low_int)
+mb <- filterPrecursorPeaks(mb, mz = "==", ppm = 50)
+mb <- mb[lengths(mb) > 1]
+```
+
+```{r matching, echo=TRUE}
+#' remove parallel processing 
+register(SerialParam())
+
+#' Matching
+prm <- CompareSpectraParam(ppm = 10, requirePrecursor = TRUE,
+                           THRESHFUN = function(x) which(x >= 0.8)) 
+mtch_full <- matchSpectra(full_spectra, mb, param = prm)
+mtch_full
+#' really low percentage of MS2 spectra matched.
+length(whichQuery(mtch_full)) / length(mtch_full) * 100
+
+#' for how many features do we have MS2 spectra
+length(unique(mtch_full$feature_id))
+    
+#' Keep only the query that got matches 
+mtch_full <- mtch_full[whichQuery(mtch_full)]
+
+#' for how many features do we have MS2 spectra WITH db matches?
+length(unique(mtch_full$feature_id))
+
+# Extract results 
+md_full <- matchedData(mtch_full, c("rtime", "precursorMz", "feature_id", 
+                                "target_inchikey", "target_compound_name", 
+                                "score", "file_index", "spectra_idx"))
+
+md_full
+
+save(md_full, file = "md_full.RData")
+load("md_full.RData")
+load("SumExp_full_preprocessing.RData")
+res_full <- res_full[, !res_full$sample_type %in% c("blank", "QC")]
+```
+
+## remove duplciate matches (using inchikey) - keep best score
+
+```{r echo=TRUE}
+rmv_duplicate <- function(md) {
+    res <- lapply(split(md, md$feature_id), function(x) {
+        lapply(split(x, x$target_inchikey), function(z) {
+            z[which.max(z$score), ]
+        }) |>
+            do.call(what = rbind)
+    }) |>
+        do.call(what = rbind) |>
+        as.data.frame()
+}
+
+md_full <- rmv_duplicate(md_full)
+
+md_full
+
+toberefined <- cbind(md_full, assay(res_full)[md_full$feature_id,])
+write.csv(toberefined, "toberefined_devices.csv")
+```
+I need them to do some refinement on the annotation
+
+# plot resulting compounds
+
+```{r eval=FALSE, include=FALSE}
+tmpdr <- "/annotation/"
+dir.create(tmpdr, recursive = TRUE, showWarnings = FALSE)
+for (i in seq_len(nrow(md_full))) {
+    chrom <- featureChromatograms(full, features = md_full$feature_id[i])
+    png(paste0(tmpdr, "feature_", md_full$feature_id[i], ".png"),
+        width = 12, height = 8, units = "cm", res = 600, pointsize = 4)
+    plot(chrom, main = paste0(md_full$target_compound_name[i], ": ", md_full$feature_id[i]),
+         col = paste0(col_sample, 80), 
+         peakBg = paste0(col_sample[chromPeaks(chrom)[, "sample"]], 40))
+    grid()
+    legend("topright", col = leg_devices,
+           legend = names(leg_devices), lty = 1)
+    abline(v = md_full$rtime[i], col = "red", lty = 3)
+    dev.off()
+}
+```
+
+I guess after refinement we would ahve mazve multiple compound per feature if there is incertaintz so for some plot we will take a unique amount of feature to be fair in the calculation
+
+```{r}
+# take fts 
+fts <- unique(md_full$feature_id)
+
+# create res object for each for these features 
+# Intensity and missing values 
+res_m <- res_full[fts, res_full$device == "Mitra"]
+res_c <- res_full[fts, res_full$device == "Capitainer"]
+res_w <- res_full[fts, res_full$device == "Whatman"]
+res_p <- res_full[fts, res_full$device == "Plasma"]
+
+idx_fts <- cbind(Whatman = rowSums(is.na(assay(res_w, "raw_filled"))) < 10,
+                 Capitainer = rowSums(is.na(assay(res_c, "raw_filled"))) < 10,
+                 Mitra = rowSums(is.na(assay(res_m, "raw_filled"))) < 10,
+                 Plasma = rowSums(is.na(assay(res_p, "raw_filled"))) < 10)
+
+res_m <- res_m[rowSums(is.na(assay(res_m, "raw_filled"))) < 10,]
+res_c <- res_c[rowSums(is.na(assay(res_c, "raw_filled"))) < 10,]
+res_w <- res_w[rowSums(is.na(assay(res_w, "raw_filled"))) < 10, ]
+res_p <- res_p[rowSums(is.na(assay(res_p, "raw_filled"))) < 10,]
+
+intensity <- list(
+    Whatman = log2(as.numeric(assay(res_w, "raw_filled"))),
+    Capitainer = log2(as.numeric(assay(res_c, "raw_filled"))),
+    Mitra = log2(as.numeric(assay(res_m, "raw_filled"))),
+    Plasma = log2(as.numeric(assay(res_p, "raw_filled")))
+)
+
+num_features <- cbind(
+    Whatman = nrow(res_w), 
+    Capitainer = nrow(res_c),
+    Mitra = nrow(res_m),
+    Plasma = nrow(res_p)
+)
+
+#change code below
+percent_missing <- cbind(
+    Whatman = sum(is.na(assay(res_w, "raw")))/length(assay(res_w, "raw")) * 100, 
+    Capitainer = sum(is.na(assay(res_c, "raw")))/length(assay(res_c, "raw")) * 100,
+    Mitra = sum(is.na(assay(res_m, "raw")))/length(assay(res_m, "raw")) * 100,
+    Plasma = sum(is.na(assay(res_p, "raw")))/length(assay(res_p, "raw")) * 100
+)
+# Plot
+layout(mat = matrix(1:3, ncol = 1), height = c(0.3, 0.3, 0.8))
+par(mar = c(1, 4.5, 1, 3))
+barplot(colSums(num_features), col = leg_device, ylab = "Number of features", 
+        space = 0.05)
+barplot(c(percent_missing), ylab = "% of missing values", 
+        col = leg_device, space = 0.05, ylim = c(0, 60))
+vioplot(intensity, ylab = "Log2 intensity", col = leg_device,
+        space = 0.05)
+```
+
+```{r echo=TRUE, fig.height=8, fig.width=8}
+# Bin features per RT slices
+res_fts <- res_full[fts,]
+vc <- rowData(res_fts)$rtmed
+breaks <- seq(0, max(vc, na.rm = TRUE) + 1, length.out = 15) |> 
+    round(0)
+cuts <- cut(vc, breaks = breaks, include.lowest = TRUE)
+
+table(cuts)
+
+num_features_solvent <- apply(idx_fts, MARGIN = 2, function(x) table(cuts[x]))
+
+idx_fts <- as.data.frame(idx_fts)
+
+ftc <-function(res_solvent, fts_idx) {
+    tmp <- rowSums(assay(res_solvent, "raw_filled"), na.rm = TRUE)
+    cuts_tmp <- cuts[fts_idx]
+    t <- split(tmp, cuts_tmp) |> 
+        lapply(sum, na.rm = TRUE, simplify = TRUE)
+    unlist(t)
+}
+
+intensity_solvent <- list(
+    Whatman = ftc(res_w, idx_fts$Whatman),
+    Capitainer = ftc(res_c, idx_fts$Capitainer),
+    Mitra = ftc(res_m, idx_fts$Mitra),
+    Plasma = ftc(res_p, idx_fts$Plasma)
+    )
+
+# Transform intensity to log2 scale
+intensity_solvent <- lapply(intensity_solvent, log2)
+
+# Plot
+layout(mat = matrix(1:2, ncol = 1), heights = c(0.5, 0.5))
+par(mar = c(0.5, 4.5, 2, 3))
+
+# Plot number of features
+ylim_features <- c(0, max(unlist(num_features_solvent)))
+plot(num_features_solvent[,1], col = leg_device[1], ylab = "Number of features",
+     xlab = "", type = "b", pch = 16, xaxt = "n", ylim = ylim_features,
+     main = "Analysis along the RT axis for each devices")
+for (i in 2:ncol(num_features_solvent)) {
+  lines(num_features_solvent[,i], col = leg_device[i], type = "b", pch = 16)
+}
+axis(1, at = 1:length(num_features_solvent[,1]), labels = FALSE)
+grid()
+legend("top", legend = names(intensity_solvent), col = leg_device, pch = 16, 
+       cex = 1, horiz = TRUE, bty = "n")
+
+# Plot intensity
+par(mar = c(5, 4.5, 2, 3))
+ylim_intensity <- range(unlist(intensity_solvent), na.rm = TRUE)
+plot(intensity_solvent[[1]], type = "b", pch = 16, xlab = "",
+     ylab = "Log2 intensity", col = leg_device[1], xaxt = "n", ylim = ylim_intensity)
+for (i in 2:length(intensity_solvent)) {
+  lines(intensity_solvent[[i]], type = "b", pch = 16, col = leg_device[i])
+}
+axis(1, at = 1:length(intensity_solvent[[1]]), 
+     labels = names(intensity_solvent[[1]]), las = 2, cex.axis = 0.8)
+mtext("Retention time (s)", side = 1, line = 4, cex = 1)
+grid()
+```
+
+- medians of the medians
+
+```{r echo=TRUE, fig.height=8, fig.width=8}
+ftc <-function(res_solvent, fts_idx) {
+    tmp <- rowMedians(assay(res_solvent, "raw_filled"), na.rm = TRUE)
+    cuts_tmp <- cuts[fts_idx]
+    t <- split(tmp, cuts_tmp) |> 
+        lapply(median, na.rm = TRUE, simplify = TRUE)
+    unlist(t)
+}
+
+intensity_solvent <- list(
+    Whatman = ftc(res_w, idx_fts$Whatman),
+    Capitainer = ftc(res_c, idx_fts$Capitainer),
+    Mitra = ftc(res_m, idx_fts$Mitra),
+    Plasma = ftc(res_p, idx_fts$Plasma)
+    )
+
+# Transform intensity to log2 scale
+intensity_solvent <- lapply(intensity_solvent, log2)
+
+# Plot
+layout(mat = matrix(1:2, ncol = 1), heights = c(0.5, 0.5))
+par(mar = c(0.5, 4.5, 2, 3))
+#
+# Plot number of features
+ylim_features <- c(0, max(unlist(num_features_solvent)))
+plot(num_features_solvent[,1], col = leg_device[1], ylab = "Number of features",
+     xlab = "", type = "b", pch = 16, xaxt = "n", ylim = ylim_features,
+     main = "Analysis along the RT axis for each devices")
+for (i in 2:ncol(num_features_solvent)) {
+  lines(num_features_solvent[,i], col = leg_device[i], type = "b", pch = 16)
+}
+axis(1, at = 1:length(num_features_solvent[,1]), labels = FALSE)
+grid()
+legend("top", legend = names(intensity_solvent), col = leg_device, pch = 16, 
+       cex = 1, horiz = TRUE, bty = "n")
+
+# Plot intensity
+par(mar = c(5, 4.5, 2, 3))
+ylim_intensity <- range(unlist(intensity_solvent), na.rm = TRUE)
+plot(intensity_solvent[[1]], type = "b", pch = 16, xlab = "",
+     ylab = "Log2 intensity", col = leg_device[1], xaxt = "n", ylim = ylim_intensity)
+for (i in 2:length(intensity_solvent)) {
+  lines(intensity_solvent[[i]], type = "b", pch = 16, col = leg_device[i])
+}
+axis(1, at = 1:length(intensity_solvent[[1]]), 
+     labels = names(intensity_solvent[[1]]), las = 2, cex.axis = 0.8)
+mtext("Retention time (s)", side = 1, line = 4, cex = 1)
+grid()
+```
+
+- overlap of features between devices
+
+```{r echo=TRUE, fig.height=5, fig.width=8}
+# Create a data frame for the UpSet plot
+upset_df <- lapply(idx_fts, as.integer)
+
+# Plot the UpSet plot
+library(UpSetR)
+upset(as.data.frame(upset_df), sets = c("Whatman", "Capitainer", "Mitra", "Plasma"),
+      sets.bar.color = leg_device,  mainbar.y.label = "Number of common features", 
+      keep.order = TRUE, mainbar.y.max= 90)
+```
+
+```{r eval=FALSE, include=FALSE}
+fts <- md_full$feature_id
+Summary_table <- cbind(md_full[, c("feature_id", "rtime", "precursorMz", "target_name")], 
+                       CV_Mitra = rowRsd(assay(res_m, "raw_filled")[fts, ], na.rm = TRUE, mad = TRUE),
+                       CV_Capitainer = rowRsd(assay(res_c, "raw_filled")[fts, ], na.rm = TRUE, mad = TRUE),
+                       CV_Whatman = rowRsd(assay(res_w, "raw_filled")[fts, ], na.rm = TRUE, mad = TRUE),
+                       CV_Plasma = rowRsd(assay(res_p, "raw_filled")[fts, ], na.rm = TRUE, mad = TRUE),
+                       Average_int_Mitra = rowMeans(assay(res_m, "raw_filled")[fts, ], na.rm = TRUE),
+                       Average_int_Capitainer = rowMeans(assay(res_c, "raw_filled")[fts, ], na.rm = TRUE),
+                       Average_int_Whatman = rowMeans(assay(res_w, "raw_filled")[fts, ], na.rm = TRUE),
+                       Average_int_Plasma = rowMeans(assay(res_p, "raw_filled")[fts, ], na.rm = TRUE),
+                       Missing_values_Mitra = rowSums(is.na(assay(res_m, "raw")[fts, ])),
+                       Missing_values_Capitainer = rowSums(is.na(assay(res_c, "raw")[fts, ])),
+                       Missing_values_Whatman = rowSums(is.na(assay(res_w, "raw")[fts, ])),
+                       Missing_values_Plasma = rowSums(is.na(assay(res_p, "raw")[fts, ]))) |>
+    as.data.frame()
+                       
+cpt <- paste0("Summary table of the annotated compounds for each solvent type.")
+pandoc.table(head(Summary_table), style = "rmarkdown", caption = cpt, split.tables = 150)
+write.csv(Summary_table, file = paste0(dir, "Summary_table_devices.csv"))
+```
