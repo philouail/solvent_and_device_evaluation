@@ -1581,7 +1581,7 @@ layout(mat = matrix(1:2, ncol = 1), heights = c(0.5, 0.5))
 par(mar = c(0.5, 4.5, 2, 3))
 
 # Plot number of features
-ylim_features <- c(0, max(unlist(num_features_solvent)))
+ylim_features <- c(0, max(unlist(num_features_solvent)), na.rm = TRUE)
 plot(num_features_solvent[,1], col = leg_device[1], ylab = "Number of features",
      xlab = "", type = "b", pch = 16, xaxt = "n", ylim = ylim_features,
      main = "Analysis along the RT axis for each devices")
