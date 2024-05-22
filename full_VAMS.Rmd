@@ -25,6 +25,7 @@ library(readxl)
 library(Biobase)
 library(SummarizedExperiment)
 library(openxlsx)
+library(vioplot)
 ```
 
 ```{r parallel-process}
@@ -61,7 +62,7 @@ sampleData(full)|>
 
 #VAMS 
 
-This dataset recorded both DBS and VAMS so I will filter the data to only keep
+This dataset recorded both VAMS and VAMS so I will filter the data to only keep
 the VAMS samples. 
 
 ```{r}
@@ -104,6 +105,8 @@ col_solvent <- leg_solvent[sampleData(full)$solvent]
 ```
 
 ```{r plot_bpc}
+#' filter the beginning ofthe retention time 
+full <- filterRt(full, c(40, 840))
 #' First extract and plot bpc 
 bpc <- chromatogram(full, aggregationFun = "max", msLevel = 1, chunkSize = 2)
 
@@ -123,7 +126,7 @@ HMDB database).
 I them extract eics for each compound and evaluate them regarding: 
 
 - peak shape, width
-- intensity vairation related to sample-type,... 
+- intensity variation related to sample-type,... 
 - retention time variation
 
 ```{r include=FALSE}
@@ -377,11 +380,75 @@ assays(res_full)$raw_filled <- featureValues(full, method = "sum",
                                         filled = TRUE )
 ```
 
+## quick blank flagging
+
+We flag features that have a high intensity in the blanks. 
+(e.g. more than half the average of the study samples)
+
+```{r}
+idx <- sampleData(full)$sample_role == "Blank"
+full <- filterFeatures(full, BlankFlag(blankIndex = idx, qcIndex = !idx))
+
+featureDefinitions(full)$possible_contaminants[is.na(featureDefinitions(full)$possible_contaminants)] <- FALSE
+featureDefinitions(full)$possible_contaminants <- as.logical(featureDefinitions(full)$possible_contaminants)
+
+# we actually remove them for downstream analysis in the sumexp object
+nrow(res_full)
+res_full <- res_full[!featureDefinitions(full)$possible_contaminants, ]
+nrow(res_full) # check that it is working
+
+de <- list(values = as.data.frame(featureValues(full)), definitions = featureDefinitions(full))
+write.xlsx(de, paste0(dir, "feature_results.xlsx"), rowNames = TRUE)
+
+# just remove blanks also 
+full 
+full <- full[sampleData(full)$sample_role != "Blank", keepFeatures = TRUE]
+full
+
+res_full
+res_full <- res_full[, res_full$sample_role != "Blank"]
+res_full
+```
+
 Save files at the end of preprocessing
 
 ```{r}
 save(res_full, file = paste0(dir, "SumExp_full_preprocessing.RData"))
 save(full, file = paste0(dir, "full_preprocessing.RData"))
+load(paste0(dir, "full_preprocessing.RData"))
+load(paste0(dir, "SumExp_full_preprocessing.RData"))
+```
+
+## Noise comparison: we will compare the amount of noise between the solvents.
+
+```{r}
+# overall signal in the dataset 
+#' - for each file calculate the sum of intensities 
+background  <- spectra(full) |>
+    split(fromFile(full)) |>
+    lapply(tic) |>
+    lapply(sum) |>
+    unlist()
+
+# Overall signal that is in the chromatographic peaks detection 
+    # - check "into" definition first, mioght need to multiply it by something
+detected <- apply(assay(res_full), 2, function(x) sum(x, na.rm = TRUE))
+
+# substract and plot ? Also i'm removing blanks bc i think we don't need it 
+names(background) <- names(detected) <- res_full$solvent
+#remove blanks
+noise <- background - detected
+
+f <- factor(names(noise), levels = unique(names(noise)))
+group <- split(noise, f)
+
+plot(NULL, xlim = c(1, length(group)), ylim = range(unlist(group)), 
+     xaxt = "n", xlab = "Solvents", ylab = "Noise", 
+     main = "Noise comparison between solvents")
+for (i in seq_along(group)) {
+  points(rep(i, length(group[[i]])), group[[i]], pch = 19, col = leg_solvent[i])
+}
+axis(1, at = seq_along(group), labels = names(group))
 ```
 
 # Normalisation 
@@ -391,10 +458,7 @@ library(ggfortify)
 library(SummarizedExperiment)
 library(RColorBrewer)
 
-idx_blank <- sampleData(full)$sample_role == "Blank"
-leg_solvent <- brewer.pal(8, name = "Dark2")[c(3, 5, 6, 7)]
-names(leg_solvent) <- unique(sampleData(full)$solvent)
-col_solvent <- leg_solvent[sampleData(full)$solvent[!idx_blank]]
+col_solvent <- leg_solvent[res_full$solvent]
 ```
 
 We first need to evaluate the data distribution and try to see any technical
@@ -404,19 +468,19 @@ related bias.
 layout(mat = matrix(1:3, ncol = 1), height = c(0.2, 0.2, 0.8))
 
 par(mar = c(0.2, 4.5, 0.2, 3))
-barplot(apply(assay(res_full, "raw")[,!idx_blank], MARGIN = 2, 
+barplot(apply(assay(res_full, "raw"), MARGIN = 2, 
               function(x) sum(!is.na(x))),
         col = col_solvent, ylab = "features raw data", xaxt = "n", 
         space = 0.012)
-barplot(apply(assay(res_full, "raw_filled")[,!idx_blank], MARGIN = 2, 
+barplot(apply(assay(res_full, "raw_filled"), MARGIN = 2, 
               function(x) sum(!is.na(x))),
         col = col_solvent, ylab = "features filled data", xaxt = "n", 
         space = 0.012)
-boxplot(log2(assay(res_full, "raw_filled")[,!idx_blank]), xaxt = "n",
+boxplot(log2(assay(res_full, "raw_filled")), xaxt = "n",
         ylab = expression(log[2]~abundance~filled~data),
         col = col_solvent, outline=FALSE, medlty = "blank", 
         border = col_solvent, varwidth = TRUE)
-points(colMedians(log2(assay(res_full, "raw_filled")[,!idx_blank]), 
+points(colMedians(log2(assay(res_full, "raw_filled")), 
                   na.rm = TRUE), type = "b", pch = 16) 
 grid(nx = NA, ny = NULL)
 legend("topright", col = leg_solvent,
@@ -426,8 +490,8 @@ legend("topright", col = leg_solvent,
 
 ```{r rla-plot raw and filled1, fig.cap = "RLA plot for the raw data and filled data. Note: outliers are not drawn."}
 par(mfrow = c(1, 1), mar = c(0.2, 4.5, 2.5, 3))
-boxplot(rowRla(assay(res_full, "raw_filled")[, !idx_blank],
-               group = res_full$solvent[!idx_blank]),
+boxplot(rowRla(assay(res_full, "raw_filled"),
+               group = res_full$solvent),
         cex = 0.5, pch = 16, boxwex = 1,
         col = col_solvent, ylab = "RLA",
         border = paste0(col_solvent, 40),
@@ -448,15 +512,17 @@ scaling step to see how well we can correct the variation between samples.
 ## quick median scaling
 
 ```{r}
-#' Compute median and generate normalization factor, we all compute together, 
-#' they are part of the same experiment as we believe the same technical 
-#' variance is applied here
+#' Compute median and generate normalization factor, we compute per solvent as
+#' to keep the technical variation relatedto the solvent.
+assays(res_full)$norm <- assay(res_full, "raw_filled")
 
-blank_idx <- res_full$sample_role != "Blank"
-mdns <- apply(assay(res_full, "raw_filled"), MARGIN = 2, median, na.rm = TRUE)
-nf_mdn <- mdns / median(mdns[blank_idx]) # To not take blank data in account
-assays(res_full)$norm <- sweep(assay(res_full, "raw_filled"), MARGIN = 2, 
-                               nf_mdn, '/')
+for (i in res_full$solvent) {
+    idx <- res_full$solvent == i
+    mdns <- apply(assay(res_full, "raw_filled")[, idx], 2, median, na.rm = TRUE)
+    nf_mdn <- mdns / median(mdns)
+    assays(res_full)$norm[, idx] <- sweep(assay(res_full, "raw_filled")[, idx], MARGIN = 2,
+                                          nf_mdn, '/')
+}
 ```
 
 We also do not use the median from blank samples as we don't want them to 
@@ -467,8 +533,8 @@ therefore the intensity distribution for these is not reliable.
 ```{r rla-plot after norm2, include = TRUE, fig.cap = "RLA plot before and after normalization. Note: outliers are not drawn.", fig.height= 7, fig.width=5.5}
 par(mfrow = c(2, 1), mar = c(1, 4, 3, 1))
 
-boxplot(rowRla(assay(res_full, "raw_filled")[, !idx_blank],
-               group = res_full$solvent[!idx_blank]),
+boxplot(rowRla(assay(res_full, "raw_filled"),
+               group = res_full$solvent),
         cex = 0.5, pch = 16, boxwex = 1,
         col = col_solvent, ylab = "RLA",
         border = paste0(col_solvent, 40),
@@ -480,8 +546,8 @@ abline(h = 0, lty=3, lwd = 1, col = "black")
 legend("topright", col = leg_solvent,
        legend = names(leg_solvent), lty=1, lwd = 2, xpd = TRUE, ncol = 3,
        cex = 0.8,  bty = "n")
-boxplot(rowRla(assay(res_full, "norm")[, !idx_blank],
-               group = res_full$solvent[!idx_blank]),
+boxplot(rowRla(assay(res_full, "norm"),
+               group = res_full$solvent),
         cex = 0.5, pch = 16, boxwex = 1,
         col = col_solvent, ylab = "RLA",
         border = paste0(col_solvent, 40),
@@ -508,10 +574,10 @@ close to eachother overall per solvent.
 
 ```{r include=TRUE, results = "asis"}
 # indices of each solvents' triplicates
-idx_mh  <- res_full$solvent == "MEOH_H2O" & res_full$sample_role != "Blank"
-idx_m  <- res_full$solvent == "MEOH" & res_full$sample_role != "Blank"
-idx_a  <- res_full$solvent == "ACN" & res_full$sample_role != "Blank"
-idx_am <- res_full$solvent == "ACN_MEOH" & res_full$sample_role != "Blank"
+idx_mh  <- res_full$solvent == "MEOH_H2O" 
+idx_m  <- res_full$solvent == "MEOH" 
+idx_a  <- res_full$solvent == "ACN" 
+idx_am <- res_full$solvent == "ACN_MEOH" 
 
 # Compute Rsds on  all data per solvents
 sample_res <- cbind(
@@ -554,16 +620,6 @@ Both the RLA plot and the CV values show that the normalization step was
 successful. The RLA shows all samples median got closer to each other and 75% 
 of our features have a CV below 30%  for each solvent which is great. 
 
-## quick blank flagging
-
-We flag features that have a high intensity in the blanks. 
-(e.g. more than half the average of the study samples)
-
-```{r}
-idx <- res_full$sample_role == "Blank"
-full <- filterFeatures(full, BlankFlag(blankIndex = idx, qcIndex = !idx))
-```
-
 Lots of flags
 
 # Comparison on overall data
@@ -571,7 +627,7 @@ Lots of flags
 - Contamination flag: comparing the amount of features that are flagged as
 possible contamination from the solvent.
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 fts_def <- featureDefinitions(full)[, c("MEOH_H2O", "MEOH", "ACN", "ACN_MEOH", 
                                         "possible_contaminants")]
 fts_def$possible_contaminants[is.na(fts_def$possible_contaminants)] <- FALSE
@@ -599,126 +655,98 @@ barplot(list_cont,
 after prepossessing and normalization.
 
 ```{r fig.height=8, fig.width=6}
-# Define the number of features for each solvent (both flagged and non-flagged)
-MEOH_H2O <- featureDefinitions(full)$MEOH_H2O >= 2
-ACN <- featureDefinitions(full)$ACN >= 2
-MEOH <- featureDefinitions(full)$MEOH >= 2
-ACN_MEOH <- featureDefinitions(full)$ACN_MEOH >= 2
-
-num_features <- c(sum(MEOH_H2O), sum(ACN), sum(MEOH), sum(ACN_MEOH))
-
-#' Quantile of RSD values after norm
+#' Quantile of RSD values after norm - non contaminant
 res_df <- data.frame(
     MetOH_H2O = quantile(sample_res[, "Norm_MH"], na.rm = TRUE),
-        ACN = quantile(sample_res[, "Norm_A"], na.rm = TRUE),
+    ACN = quantile(sample_res[, "Norm_A"], na.rm = TRUE),
     MetOH = quantile(sample_res[, "Norm_M"], na.rm = TRUE),
     ACN_MetOH = quantile(sample_res[, "Norm_AM"], na.rm = TRUE)
-    
 )
 
 # Intensity and missing values 
-
 res_mh <- res_full[, res_full$solvent == "MEOH_H2O"]
 res_m <- res_full[, res_full$solvent == "MEOH"]
 res_a <- res_full[, res_full$solvent == "ACN"]
 res_am <- res_full[, res_full$solvent == "ACN_MEOH"]
 
+idx_fts <- cbind(
+    MetOH_H2O = rowSums(is.na(assay(res_mh, "norm"))) < 2,
+    ACN = rowSums(is.na(assay(res_a, "norm"))) < 2,
+    MetOH = rowSums(is.na(assay(res_m, "norm"))) < 2,
+    ACN_MetOH = rowSums(is.na(assay(res_am, "norm"))) < 2
+)
+
+res_mh <- res_mh[rowSums(is.na(assay(res_mh, "norm"))) < 2,]
+res_m <- res_m[rowSums(is.na(assay(res_m, "norm"))) < 2,]
+res_a <- res_a[rowSums(is.na(assay(res_a, "norm"))) < 2,]
+res_am <- res_am[rowSums(is.na(assay(res_am, "norm"))) < 2,]
+
 intensity <- cbind(
     MetOH_H2O = log2(as.numeric(assay(res_mh, "norm"))),
     ACN = log2(as.numeric(assay(res_a, "norm"))),
     MetOH = log2(as.numeric(assay(res_m, "norm"))),
-    AVN_MetOH = log2(as.numeric(assay(res_am, "norm"))))
+    ACN_MetOH = log2(as.numeric(assay(res_am, "norm"))))
+
+num_features <- cbind(
+    MetOH_H2O = nrow(res_mh),
+    ACN = nrow(res_a),
+    MetOH = nrow(res_m),
+    ACN_MetOH = nrow(res_am)
+)
 
 missing_values <- cbind(
-    MetOH_H2O = rowSums(is.na(assay(res_mh, "raw"))),
-    ACN = rowSums(is.na(assay(res_a, "raw"))),
-    MetOH = rowSums(is.na(assay(res_m, "raw"))),
-    ACN_MetOH = rowSums(is.na(assay(res_am, "raw"))))
+    MetOH_H2O = sum(is.na(assay(res_mh, "raw")))/length(assay(res_mh, "raw")) * 100,
+    ACN = sum(is.na(assay(res_a, "raw")))/length(assay(res_a, "raw")) * 100,
+    MetOH = sum(is.na(assay(res_m, "raw")))/length(assay(res_m, "raw")) * 100,
+    ACN_MetOH = sum(is.na(assay(res_am, "raw")))/length(assay(res_am, "raw")) * 100
+)
 
-#General plot
-
+#General plot - now without flagged features
 layout(mat = matrix(1:3, ncol = 1), height = c(0.3, 0.3, 0.8))
 par(mar = c(1, 4.5, 1, 3))
-barplot(num_features,
+barplot(colSums(num_features),
     col = leg_solvent,
-    ylab = "Number of features", space = 0.05)
-barplot(colSums(missing_values),
-        ylab = "Number of missing values", col = leg_solvent, space = 0.05)
-boxplot(intensity, 
+    ylab = "Number of features", space = 0.05, ylim = c(0, 5000))
+barplot(c(missing_values),
+        ylab = "% of missing values", col = leg_solvent, space = 0.05, ylim = c(0, 60))
+vioplot(intensity, 
         ylab = "Log2 intensity", col = leg_solvent, space = 0.05)
-
-cpt <- paste0("Distribution of RSD values across samples for the ",
-              "normalized data for each solvent type.")
-pandoc.table(res_df, style = "rmarkdown", caption = cpt)
-
-#grid.table(signif(res_df, digits = 4))
 ```
 
-- Noise comparison: we will compare the amount of noise between the solvents.
-
 ```{r}
-# overall signal in the dataset 
-#' - for each file calculate the sum of intensities 
-background  <- spectra(full) |>
-    split(fromFile(full)) |>
-    lapply(tic) |>
-    lapply(sum) |>
-    unlist()
-
-# Overall signal that is in the chromatographic peaks detection 
-    # - check "into" definition first, mioght need to multiply it by something
-detected <- apply(assay(res_full), 2, function(x) sum(x, na.rm = TRUE))
-
-# substract and plot ? Also i'm removing blanks bc i think we don't need it 
-names(background) <- names(detected) <- res_full$solvent
-#remove blanks
-noise <- background[!idx] - detected[!idx]
-
-f <- factor(names(noise), levels = unique(names(noise)))
-group <- split(noise, f)
-
-plot(NULL, xlim = c(1, length(group)), ylim = range(unlist(group)), 
-     xaxt = "n", xlab = "Solvents", ylab = "Noise", 
-     main = "Noise comparison between solvents")
-for (i in seq_along(group)) {
-  points(rep(i, length(group[[i]])), group[[i]], pch = 19, col = leg_solvent[i])
-}
-axis(1, at = seq_along(group), labels = names(group))
+cpt <- paste0("RSD values distributionacross samples for the ",
+              "normalized data for each solvent type.")
+pandoc.table(res_df, style = "rmarkdown", caption = cpt)
 ```
 
 - number of features / intensity per rt slices 
 
-```{r fig.height=8, fig.width=8}
+```{r fig.height=9, fig.width=8}
 # Bin features per RT slices
-vc <- featureDefinitions(full)$rtmed
-breaks <- seq(0, max(vc, na.rm = TRUE) + 1, length.out = 10) |> 
+vc <- rowData(res_full)$rtmed 
+breaks <- seq(0, max(vc, na.rm = TRUE) + 1, length.out = 15) |> 
     round(0)
 cuts <- cut(vc, breaks = breaks, include.lowest = TRUE)
 
-# Number of features per RT slice for each solvent
-fts_solvents <- list(MEOH_H2O = MEOH_H2O,
-                 MEOH = MEOH,
-                 ACN = ACN,
-                 ACN_MEOH = ACN_MEOH)
+table(cuts)
 
-num_features_solvent <- lapply(fts_solvents, function(x) table(cuts[x]))
+num_features_solvent <- apply(idx_fts, MARGIN = 2, function(x) table(cuts[x]))
 
-ftc <-function(solvent_idx, fts_idx) {
-    tmp <- rowSums(assay(res_full, "norm")[, solvent_idx], na.rm = TRUE)
-    tmp <- tmp[fts_idx]
+idx_fts <- as.data.frame(idx_fts)
+
+ftc <-function(res_solvent, fts_idx) {
+    tmp <- rowSums(assay(res_solvent, "norm"), na.rm = TRUE)
     cuts_tmp <- cuts[fts_idx]
     t <- split(tmp, cuts_tmp) |> 
         lapply(sum, na.rm = TRUE, simplify = TRUE)
-    res <- unsplit(t, names(t))
-    names(res) <- names(t)
-    res
+    unlist(t)
 }
 
 intensity_solvent <- list(
-    MetOH_H20 = ftc(idx_mh, MEOH_H2O),
-    ACN = ftc(idx_a, ACN),
-    MetOH = ftc(idx_m, MEOH),
-    ACN_MetOH = ftc(idx_am, ACN_MEOH)
+    MetOH_H20 = ftc(res_mh, idx_fts$MetOH_H2O),
+    ACN = ftc(res_a, idx_fts$ACN),
+    MetOH = ftc(res_m, idx_fts$MetOH),
+    ACN_MetOH = ftc(res_am, idx_fts$ACN_MetOH)
     )
 
 # Transform intensity to log2 scale
@@ -726,51 +754,51 @@ intensity_solvent <- lapply(intensity_solvent, log2)
 
 # Plot
 layout(mat = matrix(1:2, ncol = 1), heights = c(0.5, 0.5))
-par(mar = c(2.5, 4.5, 2, 3))
+par(mar = c(0.5, 4.5, 2, 3))
 
 # Plot number of features
 ylim_features <- c(0, max(unlist(num_features_solvent)))
-plot(num_features_solvent[[1]], col = leg_solvent[1], ylab = "Number of features",
+plot(num_features_solvent[,1], col = leg_solvent[1], ylab = "Number of features",
      xlab = "", type = "b", pch = 16, xaxt = "n", ylim = ylim_features,
      main = "Analysis along the RT axis for each solvent")
-for (i in 2:length(num_features_solvent)) {
-  lines(num_features_solvent[[i]], col = leg_solvent[i], type = "b", pch = 16)
+for (i in 2:ncol(num_features_solvent)) {
+  lines(num_features_solvent[,i], col = leg_solvent[i], type = "b", pch = 16)
 }
-axis(1, at = 1:length(num_features_solvent[[1]]), labels = FALSE)
+axis(1, at = 1:length(num_features_solvent[,1]), labels = FALSE)
+grid()
+legend("top", legend = names(intensity_solvent), col = leg_solvent, pch = 16, 
+       cex = 1, horiz = TRUE, bty = "n")
 
 # Plot intensity
+par(mar = c(5, 4.5, 2, 3))
 ylim_intensity <- range(unlist(intensity_solvent))
-plot(intensity_solvent[[1]], type = "b", pch = 16, xlab = "Retention time",
-     ylab = "Intensity", col = leg_solvent[1], xaxt = "n", ylim = ylim_intensity)
+plot(intensity_solvent[[1]], type = "b", pch = 16, xlab = "",
+     ylab = "Log2 intensity", col = leg_solvent[1], xaxt = "n", ylim = ylim_intensity)
 for (i in 2:length(intensity_solvent)) {
   lines(intensity_solvent[[i]], type = "b", pch = 16, col = leg_solvent[i])
 }
-axis(1, at = 1:length(intensity_solvent[[1]]), labels = names(intensity_solvent[[1]]), las = 1, cex.axis = 0.8)
-legend("top", legend = names(intensity_solvent), col = leg_solvent, pch = 16, cex = 1, horiz = TRUE, bty = "n")
-
-
-# par for both and grid, 
+axis(1, at = 1:length(intensity_solvent[[1]]), 
+     labels = names(intensity_solvent[[1]]), las = 2, cex.axis = 0.8)
+grid()
+mtext("Retention time (s)", side = 1, line = 4, cex = 1)
 ```
 
-- meadians of the medians
+- median of median
 
-```{r fig.height=8, fig.width=8}
-ftc <-function(solvent_idx, fts_idx) {
-    tmp <- rowMedians(assay(res_full, "norm")[, solvent_idx], na.rm = TRUE)
-    tmp <- tmp[fts_idx]
+```{r fig.height=9, fig.width=8}
+ftc <-function(res_solvent, fts_idx) {
+    tmp <- rowMedians(assay(res_solvent, "norm"), na.rm = TRUE)
     cuts_tmp <- cuts[fts_idx]
     t <- split(tmp, cuts_tmp) |> 
         lapply(median, na.rm = TRUE, simplify = TRUE)
-    res <- unsplit(t, names(t))
-    names(res) <- names(t)
-    res
+    unlist(t)
 }
 
 intensity_solvent <- list(
-    MetOH_H20 = ftc(idx_mh, MEOH_H2O),
-    ACN = ftc(idx_a, ACN),
-    MetOH = ftc(idx_m, MEOH),
-    ACN_MetOH = ftc(idx_am, ACN_MEOH)
+    MetOH_H20 = ftc(res_mh, idx_fts$MetOH_H2O),
+    ACN = ftc(res_a, idx_fts$ACN),
+    MetOH = ftc(res_m, idx_fts$MetOH),
+    ACN_MetOH = ftc(res_am, idx_fts$ACN_MetOH)
     )
 
 # Transform intensity to log2 scale
@@ -778,87 +806,46 @@ intensity_solvent <- lapply(intensity_solvent, log2)
 
 # Plot
 layout(mat = matrix(1:2, ncol = 1), heights = c(0.5, 0.5))
-par(mar = c(2.5, 4.5, 2, 3))
+par(mar = c(0.5, 4.5, 2, 3))
 
 # Plot number of features
 ylim_features <- c(0, max(unlist(num_features_solvent)))
-plot(num_features_solvent[[1]], col = leg_solvent[1], ylab = "Number of features",
+plot(num_features_solvent[,1], col = leg_solvent[1], ylab = "Number of features",
      xlab = "", type = "b", pch = 16, xaxt = "n", ylim = ylim_features,
      main = "Analysis along the RT axis for each solvent")
-for (i in 2:length(num_features_solvent)) {
-  lines(num_features_solvent[[i]], col = leg_solvent[i], type = "b", pch = 16)
+for (i in 2:ncol(num_features_solvent)) {
+  lines(num_features_solvent[,i], col = leg_solvent[i], type = "b", pch = 16)
 }
-axis(1, at = 1:length(num_features_solvent[[1]]), labels = FALSE)
+axis(1, at = 1:length(num_features_solvent[,1]), labels = FALSE)
+grid()
+legend("top", legend = names(intensity_solvent), col = leg_solvent, pch = 16, 
+       cex = 1, horiz = TRUE, bty = "n")
 
 # Plot intensity
+par(mar = c(5, 4.5, 2, 3))
 ylim_intensity <- range(unlist(intensity_solvent))
-plot(intensity_solvent[[1]], type = "b", pch = 16, xlab = "Retention time",
-     ylab = "Intensity", col = leg_solvent[1], xaxt = "n", ylim = ylim_intensity)
+plot(intensity_solvent[[1]], type = "b", pch = 16, xlab = "",
+     ylab = "Log2 intensity", col = leg_solvent[1], xaxt = "n", ylim = ylim_intensity)
 for (i in 2:length(intensity_solvent)) {
   lines(intensity_solvent[[i]], type = "b", pch = 16, col = leg_solvent[i])
 }
-axis(1, at = 1:length(intensity_solvent[[1]]), labels = names(intensity_solvent[[1]]), las = 1, cex.axis = 0.8)
-legend("top", legend = names(intensity_solvent), col = leg_solvent, pch = 16, cex = 1, horiz = TRUE, bty = "n")
+axis(1, at = 1:length(intensity_solvent[[1]]), 
+     labels = names(intensity_solvent[[1]]), las = 2, cex.axis = 0.8)
+grid()
+mtext("Retention time (s)", side = 1, line = 4, cex = 1)
 ```
 
-- sum of the medians
-
-```{r fig.height=8, fig.width=8}
-ftc <-function(solvent_idx, fts_idx) {
-    tmp <- rowMedians(assay(res_full, "norm")[, solvent_idx], na.rm = TRUE)
-    tmp <- tmp[fts_idx]
-    cuts_tmp <- cuts[fts_idx]
-    t <- split(tmp, cuts_tmp) |> 
-        lapply(sum, na.rm = TRUE, simplify = TRUE)
-    res <- unsplit(t, names(t))
-    names(res) <- names(t)
-    res
-}
-
-intensity_solvent <- list(
-    MetOH_H20 = ftc(idx_mh, MEOH_H2O),
-    ACN = ftc(idx_a, ACN),
-    MetOH = ftc(idx_m, MEOH),
-    ACN_MetOH = ftc(idx_am, ACN_MEOH)
-    )
-
-# Transform intensity to log2 scale
-intensity_solvent <- lapply(intensity_solvent, log2)
-
-# Plot
-layout(mat = matrix(1:2, ncol = 1), heights = c(0.5, 0.5))
-par(mar = c(2.5, 4.5, 2, 3))
-
-# Plot number of features
-ylim_features <- c(0, max(unlist(num_features_solvent)))
-plot(num_features_solvent[[1]], col = leg_solvent[1], ylab = "Number of features",
-     xlab = "", type = "b", pch = 16, xaxt = "n", ylim = ylim_features,
-     main = "Analysis along the RT axis for each solvent")
-for (i in 2:length(num_features_solvent)) {
-  lines(num_features_solvent[[i]], col = leg_solvent[i], type = "b", pch = 16)
-}
-axis(1, at = 1:length(num_features_solvent[[1]]), labels = FALSE)
-
-# Plot intensity
-ylim_intensity <- range(unlist(intensity_solvent))
-plot(intensity_solvent[[1]], type = "b", pch = 16, xlab = "Retention time",
-     ylab = "Intensity", col = leg_solvent[1], xaxt = "n", ylim = ylim_intensity)
-for (i in 2:length(intensity_solvent)) {
-  lines(intensity_solvent[[i]], type = "b", pch = 16, col = leg_solvent[i])
-}
-axis(1, at = 1:length(intensity_solvent[[1]]), labels = names(intensity_solvent[[1]]), las = 1, cex.axis = 0.8)
-legend("top", legend = names(intensity_solvent), col = leg_solvent, pch = 16, cex = 1, horiz = TRUE, bty = "n")
-```
 
 - overlap of features between solvents
 
-```{r}
-# Create a data frame for the UpSet plot
-upset_df <- lapply(fts_solvents, as.integer)
-
+```{r echo=TRUE}
+# Create a data frame for the UpSet plot - need to fix
+upset_df <- lapply(idx_fts, as.integer)
+names(leg_solvent) <- names(upset_df)
 # Plot the UpSet plot
 library(UpSetR)
-upset(data.frame(upset_df), sets = c("MEOH_H2O", "ACN", "MEOH", "ACN_MEOH"), sets.bar.color = leg_solvent)
+upset(as.data.frame(upset_df), sets = c("MetOH_H2O", "ACN", "MetOH", "ACN_MetOH"),
+      sets.bar.color = leg_solvent, mainbar.y.label = "Number of common features", keep.order = TRUE, mainbar.y.max= 3000)
 ```
 
 
@@ -873,14 +860,11 @@ save(res_full, file = paste0(dir, "SumExp_full_normalisation.RData"))
 full@spectra$file_index <- fromFile(full)
 ```
 
-First need to prep spectra input 
-
-```{r prep spectra}
+```{r prep-spectra}
 ## dataset 
 # get spectra data and change their backend 
-full_spectra <- featureSpectra(full, msLevel = 2L)
-full_spectra <- setBackend(full_spectra, MsBackendMemory())
-
+idx_fts <- rownames(featureDefinitions(full)) %in% rownames(res_full)
+full_spectra <- featureSpectra(full, msLevel = 2L, features = idx_fts) # not annotating for contamination
 #' Remove peaks with an intensity below 5% or the spectra's BPC
 low_int <- function(x, ...) {
     x > max(x, na.rm = TRUE) * 0.05
@@ -907,22 +891,35 @@ full_spectra <- full_spectra[lengths(full_spectra) > 1]
 #' Add Spectra index 
 full_spectra$spectra_idx <- seq_len(length(full_spectra))
 
-#' Apply processing
+full_spectra <-setBackend(full_spectra, MsBackendMemory())
 full_spectra <- applyProcessing(full_spectra)
+
+save(full_spectra, file = paste0(dir, "full_spectra.RData"))
 ```
 
-```{r}
-## database 
-library(AnnotationHub)
+```{r loadlibrary}
 library(MetaboAnnotation)
-library(CompoundDb)
+library(MsBackendSql)
+library(RSQLite)
+```
 
-ah <- AnnotationHub()
-query(ah, "MassBank") 
-mb <- ah[["AH116166"]] #updated 19.02.24
 
-#' Get full MS2 data from MassBank 
-mb <- Spectra(mb)
+```{r loadgnps}
+# "/home/plouail/MsBackendSql.GNPS.matchms.cleaned.v1.sqlite" for cluster
+#"C:/Users/plouail/Documents/MsBackendSql.GNPS.matchms.cleaned.v1.sqlite"
+#load gnps library
+mb <- Spectra(file.path("/home/plouail/pilot_study/MsBackendSql.GNPS.matchms.cleaned.v1.sqlite"),
+    drv = SQLite(), source = MsBackendOfflineSql())
+```
+
+```{r filtergnps, echo=TRUE}
+mb <- setBackend(mb, MsBackendMemory())
+low_int <- function(x, ...) {
+    x > max(x, na.rm = TRUE) * 0.05
+}
+## phili change this to use filterRanges()
+#' remove negative polarity 
+mb <- mb[mb$polarity == 1]
 
 #' Do same filtering as for our spectra data 
 mb <- filterIntensity(mb, intensity = low_int)
@@ -930,21 +927,9 @@ mb <- filterPrecursorPeaks(mb, mz = "==", ppm = 50)
 mb <- mb[lengths(mb) > 1]
 ```
 
-It is important to note that we are using different databases to annotate.
-In the future we will try to implement the GNPS mix of databases.
-
-You can run this code with your own database to accurately compare your results
-with different softwares. 
-
-Matching our spectra data to the database:
-
-```{r matching}
+```{r matching, echo=TRUE}
 #' remove parallel processing 
 register(SerialParam())
-
-#' Change databse backend and apply processing described earlier
-mb <- setBackend(mb, MsBackendMemory())
-mb <- applyProcessing(mb)
 
 #' Matching
 prm <- CompareSpectraParam(ppm = 10, requirePrecursor = TRUE,
@@ -965,11 +950,12 @@ length(unique(mtch_full$feature_id))
 
 # Extract results 
 md_full <- matchedData(mtch_full, c("rtime", "precursorMz", "feature_id", 
-                                "target_inchikey", "target_name", "score", 
-                                "target_formula", "file_index", "spectra_idx"))
+                                "target_inchikey", "target_compound_name", 
+                                "score", "file_index", "spectra_idx"))
 
+md_full
 
-save(md_full, file = paste0(dir, "md_full.RData"))
+save(md_full, file = paste0("md_full.RData"))
 ```
 
 ## remove duplciate matches (using inchikey) - keep best score
@@ -987,7 +973,14 @@ rmv_duplicate <- function(md) {
 }
 
 md_full <- rmv_duplicate(md_full)
+
+md_full
+
+toberefined <- cbind(md_full, assay(res_full)[md_full$feature_id,])
+write.csv(toberefined, "toberefined_VAMS_solvent.csv")
 ```
+
+I need them to do some refinement on the annotation
 
 # plot resulting compounds
 
@@ -1009,158 +1002,93 @@ for (i in seq_len(nrow(md_full))) {
 }
 ```
 
-# Separate blanks 
-
-```{r}
-full_blank <- full[sampleData(full)$sample_role == "Blank", keepFeatures = TRUE]
-full <- full[sampleData(full)$sample_role != "Blank", keepFeatures = TRUE]
-
-res_full_blank <- res_full[, res_full$sample_role == "Blank"]
-res_full <- res_full[, res_full$sample_role != "Blank"]
-```
-
 # Comparison on annotated data 
 
-```{r echo=TRUE}
-# Bind annotation data with feature values and possible contaminant flag
-fts_def <- featureDefinitions(full)[md_full$feature_id, 
-                                    c("MEOH_H2O", "MEOH", "ACN", "ACN_MEOH", 
-                                      "possible_contaminants")]
-md_full <- cbind(md_full, fts_def)
-# some NA because no blank signal: replace by FALSE
-md_full$possible_contaminants[is.na(md_full$possible_contaminants)] <- FALSE 
-md_full$possible_contaminants <- as.logical(md_full$possible_contaminants)
-
-# Create a annotation list with no  feature doublets - just to evaluate 
-# contaminants and non contaminants
-
-unique_fts <- split(md_full, md_full$feature_id) |>
-    lapply(function(x) {
-        x[which.max(x$score), ]
-    }) |> 
-    do.call(what = rbind) |>
-    as.data.frame()
-
-MEOH <- unique_fts$MEOH >= 2 & unique_fts$possible_contaminants == TRUE
-MEOH_H2O <- unique_fts$MEOH_H2O >= 2 & unique_fts$possible_contaminants == TRUE
-ACN <- unique_fts$ACN >= 2 & unique_fts$possible_contaminants == TRUE
-ACN_MEOH <- unique_fts$ACN_MEOH >= 2 & unique_fts$possible_contaminants == TRUE
-
-# Summary compare amount of cont. between solvent
-list_cont <- c(sum(MEOH_H2O), sum(ACN), sum(MEOH), sum(ACN_MEOH))
-
-# Create the bar plot
-barplot(list_cont,
-        names.arg = names(leg_solvent),
-        col = leg_solvent,
-        xlab = "Solvents",
-        ylab = "Number of annotated features",
-        main = paste0("Number of annotated features that are contamination ",
-        "from solvent"))
-```
+- summary plot: the plot below is one of the summary plot that compare results
+after prepossessing and normalization.
 
 ```{r fig.height=8, fig.width=6}
-# Take non-contaminated features 
-MEOH <- unique_fts$MEOH >= 2 & unique_fts$possible_contaminants == FALSE
-MEOH_H2O <- unique_fts$MEOH_H2O >= 2 &
-    unique_fts$possible_contaminants == FALSE
-ACN <- unique_fts$ACN >= 2 & unique_fts$possible_contaminants == FALSE
-ACN_MEOH <- unique_fts$ACN_MEOH >= 2 & 
-    unique_fts$possible_contaminants == FALSE
+fts <- unique(md_full$feature_id)
 
-# Define the number of annotated features for each solvent
-num_compounds <- c(sum(MEOH_H2O), sum(ACN), sum(MEOH), sum(ACN_MEOH))
+# Intensity and missing values 
+res_mh <- res_full[fts, res_full$solvent == "MEOH_H2O"]
+res_m <- res_full[fts, res_full$solvent == "MEOH"]
+res_a <- res_full[fts, res_full$solvent == "ACN"]
+res_am <- res_full[fts, res_full$solvent == "ACN_MEOH"]
 
-res_mh <- res_full[, res_full$solvent == "MEOH_H2O"]
-res_m <- res_full[, res_full$solvent == "MEOH"]
-res_a <- res_full[, res_full$solvent == "ACN"]
-res_am <- res_full[, res_full$solvent == "ACN_MEOH"]
-
-fts <- unique_fts$feature_id # allows to remove bias due to doublet in annotation
-
-# Compute Rsds and quantiles on annotated data per solvent
-CV_df <- cbind(
-    MetOH_H2O = rowRsd(assay(res_mh, "norm")[fts, ], na.rm = TRUE, mad = TRUE),
-    ACN = rowRsd(assay(res_a, "norm")[fts, ], na.rm = TRUE, mad = TRUE),
-    MetOH = rowRsd(assay(res_m, "norm")[fts, ], na.rm = TRUE, mad = TRUE),
-    ACN_MetOH = rowRsd(assay(res_am, "norm")[fts, ], na.rm = TRUE, mad = TRUE))
-
-res_df <- data.frame(
-    MetOH_H2O = quantile(CV_df[, "MetOH_H2O"], na.rm = TRUE),
-    ACN = quantile(CV_df[, "ACN"], na.rm = TRUE),
-    MetOH = quantile(CV_df[, "MetOH"], na.rm = TRUE),
-    ACN_MetOH = quantile(CV_df[, "ACN_MetOH"], na.rm = TRUE)
+idx_fts <- cbind(
+    MetOH_H2O = rowSums(is.na(assay(res_mh, "norm"))) < 2,
+    ACN = rowSums(is.na(assay(res_a, "norm"))) < 2,
+    MetOH = rowSums(is.na(assay(res_m, "norm"))) < 2,
+    ACN_MetOH = rowSums(is.na(assay(res_am, "norm"))) < 2
 )
 
-# Extract intensity for annotated data per solvent
+res_mh <- res_mh[rowSums(is.na(assay(res_mh, "norm"))) < 2,]
+res_m <- res_m[rowSums(is.na(assay(res_m, "norm"))) < 2,]
+res_a <- res_a[rowSums(is.na(assay(res_a, "norm"))) < 2,]
+res_am <- res_am[rowSums(is.na(assay(res_am, "norm"))) < 2,]
+
 intensity <- cbind(
-    MetOH_H2O = log2(as.numeric(assay(res_mh, "norm")[fts, ])),
-    ACN = log2(as.numeric(assay(res_a, "norm")[fts, ])),
-    MetOH = log2(as.numeric(assay(res_m, "norm")[fts, ])),
-    AVN_MetOH = log2(as.numeric(assay(res_am, "norm")[fts, ])))
+    MetOH_H2O = log2(as.numeric(assay(res_mh, "norm"))),
+    ACN = log2(as.numeric(assay(res_a, "norm"))),
+    MetOH = log2(as.numeric(assay(res_m, "norm"))),
+    ACN_MetOH = log2(as.numeric(assay(res_am, "norm"))))
 
-# Calculate amount of missing values per solvent
+num_features <- cbind(
+    MetOH_H2O = nrow(res_mh),
+    ACN = nrow(res_a),
+    MetOH = nrow(res_m),
+    ACN_MetOH = nrow(res_am)
+)
+
 missing_values <- cbind(
-    MetOH_H2O = rowSums(is.na(assay(res_mh, "raw")[fts, ])),
-    ACN = rowSums(is.na(assay(res_a, "raw")[fts, ])),
-    MetOH = rowSums(is.na(assay(res_m, "raw")[fts, ])),
-    ACN_MetOH = rowSums(is.na(assay(res_am, "raw")[fts, ])))
+    MetOH_H2O = sum(is.na(assay(res_mh, "raw")))/length(assay(res_mh, "raw")) * 100,
+    ACN = sum(is.na(assay(res_a, "raw")))/length(assay(res_a, "raw")) * 100,
+    MetOH = sum(is.na(assay(res_m, "raw")))/length(assay(res_m, "raw")) * 100,
+    ACN_MetOH = sum(is.na(assay(res_am, "raw")))/length(assay(res_am, "raw")) * 100
+)
 
-#General summary plot combining data above 
+#General plot - now without flagged features
 layout(mat = matrix(1:3, ncol = 1), height = c(0.3, 0.3, 0.8))
 par(mar = c(1, 4.5, 1, 3))
-barplot(num_compounds,
+barplot(colSums(num_features),
     col = leg_solvent,
-    ylab = "Number of annotated feature", space = 0.05)
-barplot(colSums(missing_values),
-        ylab = "Number of missing values", col = leg_solvent, space = 0.05)
-boxplot(intensity, 
+    ylab = "Number of features", space = 0.05)
+barplot(c(missing_values),
+        ylab = "% of missing values", col = leg_solvent, space = 0.05, 
+        ylim = c(0, 60))
+vioplot(intensity, 
         ylab = "Log2 intensity", col = leg_solvent, space = 0.05)
-
-cpt <- paste0("Distribution of RSD values across samples for the ",
-              "annotated compounds for each solvent type.")
-pandoc.table(res_df, style = "rmarkdown", caption = cpt)
-
-# to save the Rsd table - run in command line: 
-#grid.table(signif(res_df, digits = 4))
 ```
 
-- distribution along the retention time axis 
+- number of features / intensity per rt slices 
 
-```{r fig.height=8, fig.width=8}
-#idx for each solvent
-idx_mh <- sampleData(full)$solvent == "MEOH_H2O"
-idx_m <- sampleData(full)$solvent == "MEOH"
-idx_a <- sampleData(full)$solvent == "ACN"
-idx_am <- sampleData(full)$solvent == "ACN_MEOH"
+```{r fig.height=9, fig.width=8}
+# Bin features per RT slices
+vc <- rowData(res_full)$rtmed 
+breaks <- seq(0, max(vc, na.rm = TRUE) + 1, length.out = 15) |> 
+    round(0)
+cuts <- cut(vc, breaks = breaks, include.lowest = TRUE)
 
-#need annotated features names for each solvent 
-fts_solvents <- list(MEOH_H2O = unique(md_full$feature_id[MEOH_H2O]),
-                 MEOH = unique(md_full$feature_id[MEOH]),
-                 ACN = unique(md_full$feature_id[ACN]),
-                 ACN_MEOH = unique(md_full$feature_id[ACN_MEOH]))
+table(cuts)
 
-# get indice form the full dataset
-fts_solvents <- lapply(fts_solvents, function(x) rownames(featureDefinitions(full)) %in% x)
+num_features_solvent <- apply(idx_fts, MARGIN = 2, function(x) table(cuts[x]))
 
-num_features_solvent <- lapply(fts_solvents, function(x) table(cuts[x]))
+idx_fts <- as.data.frame(idx_fts)
 
-ftc <-function(solvent_idx, fts_idx) {
-    tmp <- rowSums(assay(res_full, "norm")[, solvent_idx], na.rm = TRUE)
-    tmp <- tmp[fts_idx]
+ftc <-function(res_solvent, fts_idx) {
+    tmp <- rowSums(assay(res_solvent, "norm"), na.rm = TRUE)
     cuts_tmp <- cuts[fts_idx]
     t <- split(tmp, cuts_tmp) |> 
         lapply(sum, na.rm = TRUE, simplify = TRUE)
-    res <- unsplit(t, names(t))
-    names(res) <- names(t)
-    res
+    unlist(t)
 }
 
 intensity_solvent <- list(
-    MetOH_H20 = ftc(idx_mh, fts_solvents$MEOH_H2O),
-    ACN = ftc(idx_a, fts_solvents$ACN),
-    MetOH = ftc(idx_m, fts_solvents$MEOH),
-    ACN_MetOH = ftc(idx_am, fts_solvents$ACN_MEOH)
+    MetOH_H20 = ftc(res_mh, idx_fts$MetOH_H2O),
+    ACN = ftc(res_a, idx_fts$ACN),
+    MetOH = ftc(res_m, idx_fts$MetOH),
+    ACN_MetOH = ftc(res_am, idx_fts$ACN_MetOH)
     )
 
 # Transform intensity to log2 scale
@@ -1168,48 +1096,51 @@ intensity_solvent <- lapply(intensity_solvent, log2)
 
 # Plot
 layout(mat = matrix(1:2, ncol = 1), heights = c(0.5, 0.5))
-par(mar = c(2.5, 4.5, 2, 3))
+par(mar = c(0.5, 4.5, 2, 3))
 
 # Plot number of features
 ylim_features <- c(0, max(unlist(num_features_solvent)))
-plot(num_features_solvent[[1]], col = leg_solvent[1], ylab = "Number of features",
+plot(num_features_solvent[,1], col = leg_solvent[1], ylab = "Number of features",
      xlab = "", type = "b", pch = 16, xaxt = "n", ylim = ylim_features,
      main = "Analysis along the RT axis for each solvent")
-for (i in 2:length(num_features_solvent)) {
-  lines(num_features_solvent[[i]], col = leg_solvent[i], type = "b", pch = 16)
+for (i in 2:ncol(num_features_solvent)) {
+  lines(num_features_solvent[,i], col = leg_solvent[i], type = "b", pch = 16)
 }
-axis(1, at = 1:length(num_features_solvent[[1]]), labels = FALSE)
+axis(1, at = 1:length(num_features_solvent[,1]), labels = FALSE)
+grid()
+legend("top", legend = names(intensity_solvent), col = leg_solvent, pch = 16, 
+       cex = 1, horiz = TRUE, bty = "n")
 
 # Plot intensity
-ylim_intensity <- range(unlist(intensity_solvent))
-plot(intensity_solvent[[1]], type = "b", pch = 16, xlab = "Retention time",
-     ylab = "Intensity", col = leg_solvent[1], xaxt = "n", ylim = ylim_intensity)
+par(mar = c(5, 4.5, 2, 3))
+ylim_intensity <- range(unlist(intensity_solvent), na.rm = TRUE)
+plot(intensity_solvent[[1]], type = "b", pch = 16, xlab = "",
+     ylab = "Log2 intensity", col = leg_solvent[1], xaxt = "n", ylim = ylim_intensity)
 for (i in 2:length(intensity_solvent)) {
   lines(intensity_solvent[[i]], type = "b", pch = 16, col = leg_solvent[i])
 }
-axis(1, at = 1:length(intensity_solvent[[1]]), labels = names(intensity_solvent[[1]]), las = 1, cex.axis = 0.8)
-legend("top", legend = names(intensity_solvent), col = leg_solvent, pch = 16, cex = 1, horiz = TRUE, bty = "n")
+axis(1, at = 1:length(intensity_solvent[[1]]), 
+     labels = names(intensity_solvent[[1]]), las = 2, cex.axis = 0.8)
+grid()
+mtext("Retention time (s)", side = 1, line = 4, cex = 1)
 ```
 
-- medians of the medians
+- median of median
 
-```{r fig.height=8, fig.width=8}
-ftc <-function(solvent_idx, fts_idx) {
-    tmp <- rowMedians(assay(res_full, "norm")[, solvent_idx], na.rm = TRUE)
-    tmp <- tmp[fts_idx]
+```{r fig.height=9, fig.width=8}
+ftc <-function(res_solvent, fts_idx) {
+    tmp <- rowMedians(assay(res_solvent, "norm"), na.rm = TRUE)
     cuts_tmp <- cuts[fts_idx]
     t <- split(tmp, cuts_tmp) |> 
         lapply(median, na.rm = TRUE, simplify = TRUE)
-    res <- unsplit(t, names(t))
-    names(res) <- names(t)
-    res
+    unlist(t)
 }
 
 intensity_solvent <- list(
-    MetOH_H20 = ftc(idx_mh, fts_solvents$MEOH_H2O),
-    ACN = ftc(idx_a, fts_solvents$ACN),
-    MetOH = ftc(idx_m, fts_solvents$MEOH),
-    ACN_MetOH = ftc(idx_am, fts_solvents$ACN_MEOH)
+    MetOH_H20 = ftc(res_mh, idx_fts$MetOH_H2O),
+    ACN = ftc(res_a, idx_fts$ACN),
+    MetOH = ftc(res_m, idx_fts$MetOH),
+    ACN_MetOH = ftc(res_am, idx_fts$ACN_MetOH)
     )
 
 # Transform intensity to log2 scale
@@ -1217,54 +1148,46 @@ intensity_solvent <- lapply(intensity_solvent, log2)
 
 # Plot
 layout(mat = matrix(1:2, ncol = 1), heights = c(0.5, 0.5))
-par(mar = c(2.5, 4.5, 2, 3))
+par(mar = c(0.5, 4.5, 2, 3))
 
 # Plot number of features
 ylim_features <- c(0, max(unlist(num_features_solvent)))
-plot(num_features_solvent[[1]], col = leg_solvent[1], ylab = "Number of features",
+plot(num_features_solvent[,1], col = leg_solvent[1], ylab = "Number of features",
      xlab = "", type = "b", pch = 16, xaxt = "n", ylim = ylim_features,
      main = "Analysis along the RT axis for each solvent")
-for (i in 2:length(num_features_solvent)) {
-  lines(num_features_solvent[[i]], col = leg_solvent[i], type = "b", pch = 16)
+for (i in 2:ncol(num_features_solvent)) {
+  lines(num_features_solvent[,i], col = leg_solvent[i], type = "b", pch = 16)
 }
-axis(1, at = 1:length(num_features_solvent[[1]]), labels = FALSE)
+axis(1, at = 1:length(num_features_solvent[,1]), labels = FALSE)
+grid()
+legend("top", legend = names(intensity_solvent), col = leg_solvent, pch = 16, 
+       cex = 1, horiz = TRUE, bty = "n")
 
 # Plot intensity
+par(mar = c(5, 4.5, 2, 3))
 ylim_intensity <- range(unlist(intensity_solvent), na.rm = TRUE)
-plot(intensity_solvent[[1]], type = "b", pch = 16, xlab = "Retention time",
-     ylab = "Intensity", col = leg_solvent[1], xaxt = "n", ylim = ylim_intensity)
+plot(intensity_solvent[[1]], type = "b", pch = 16, xlab = "",
+     ylab = "Log2 intensity", col = leg_solvent[1], xaxt = "n", ylim = ylim_intensity)
 for (i in 2:length(intensity_solvent)) {
   lines(intensity_solvent[[i]], type = "b", pch = 16, col = leg_solvent[i])
 }
-axis(1, at = 1:length(intensity_solvent[[1]]), labels = names(intensity_solvent[[1]]), las = 1, cex.axis = 0.8)
-legend("top", legend = names(intensity_solvent), col = leg_solvent, pch = 16, cex = 1, horiz = TRUE, bty = "n")
+axis(1, at = 1:length(intensity_solvent[[1]]), 
+     labels = names(intensity_solvent[[1]]), las = 2, cex.axis = 0.8)
+grid()
+mtext("Retention time (s)", side = 1, line = 4, cex = 1)
 ```
 
-- overlap of annotated data 
 
-```{r}
-# annotated list if you want
-library(UpSetR)
+- overlap of features between solvents
 
-# Use the annotated data bit unqiue features generated before. Here instead we
-# should probably have a list of the annotated compounds that you guys curate. 
-
-MEOH <- unique_fts$MEOH >= 2 
-MEOH_H2O <- unique_fts$MEOH_H2O >= 2 
-ACN <- unique_fts$ACN >= 2 
-ACN_MEOH <- unique_fts$ACN_MEOH >= 2 
-
-# Create a data frame for the UpSet plot
-upset_df <- data.frame(
-  MEOH_H2O = as.integer(MEOH_H2O),
-  ACN = as.integer(ACN),
-  MEOH = as.integer(MEOH),
-  ACN_MEOH = as.integer(ACN_MEOH)
-)
-
+```{r echo=TRUE}
+# Create a data frame for the UpSet plot - need to fix
+upset_df <- lapply(idx_fts, as.integer)
+names(leg_solvent) <- names(upset_df)
 # Plot the UpSet plot
-upset(upset_df, sets = c("MEOH_H2O", "ACN", "MEOH", "ACN_MEOH"), 
-      sets.bar.color = leg_solvent)
+library(UpSetR)
+upset(as.data.frame(upset_df), sets = c("MetOH_H2O", "ACN", "MetOH", "ACN_MetOH"),
+      sets.bar.color = leg_solvent, mainbar.y.label = "Number of common features", keep.order = TRUE, mainbar.y.max= 100)
 ```
 
 
@@ -1290,64 +1213,65 @@ pandoc.table(head(Summary_table), style = "rmarkdown", caption = cpt, split.tabl
 write.csv(Summary_table, file = paste0(dir, "Summary_table_VAMS.csv"))
 ```
 
-## Annex checking if your annotated compounds are contamination 
+<!-- ## Annex checking if your annotated compounds are contamination  -->
 
-Compound i will check:
-- 2,2'-(Tetradecylimino)diethanol 
-- Hexamethylphosphoramide
+<!-- Compound i will check: -->
+<!-- - 2,2'-(Tetradecylimino)diethanol  -->
+<!-- - Hexamethylphosphoramide -->
 
-You can easily adjust the code to do it with other compounds.
+<!-- You can easily adjust the code to do it with other compounds. -->
 
-```{r fig.height=10, fig.width=12}
-# 2,2'-(Tetradecylimino)diethanol
-m <- compounds[compounds$Metabolite_Name == "2,2'-(Tetradecylimino)diethanol",]
+<!-- ```{r fig.height=10, fig.width=12} -->
+<!-- # 2,2'-(Tetradecylimino)diethanol -->
+<!-- m <- compounds[compounds$Metabolite_Name == "2,2'-(Tetradecylimino)diethanol",] -->
 
-# Extract all MS2 spectra in that area 
-spectra <- filterRanges(full_spectra, # MS2 spectra object from before
-                        spectraVariables = c("rtime", "precursorMz"), 
-                        ranges = c(m$rtmin, m$rtmax, m$mzmin, m$mzmax))
+<!-- # Extract all MS2 spectra in that area  -->
+<!-- spectra <- filterRanges(full_spectra, # MS2 spectra object from before -->
+<!--                         spectraVariables = c("rtime", "precursorMz"),  -->
+<!--                         ranges = c(m$rtmin, m$rtmax, m$mzmin, m$mzmax)) -->
 
-# Building similarity matrix 
-sim_matrix <- compareSpectra(spectra)
-vec <- spectra$file_index
-vec[vec %in% c(1:4)] <- "blank"
-vec[vec %in% c(5:16)] <- "study"
+<!-- # Building similarity matrix  -->
+<!-- sim_matrix <- compareSpectra(spectra) -->
+<!-- vec <- spectra$file_index -->
+<!-- vec[vec %in% c(1:4)] <- "blank" -->
+<!-- vec[vec %in% c(5:16)] <- "study" -->
 
-# Creating heatmap data
-ann <- data.frame(sample_type = vec)
-rownames(ann) <- rownames(sim_matrix)
-col_sample <- c("blank" = "orange", "study" = "grey")
+<!-- # Creating heatmap data -->
+<!-- ann <- data.frame(sample_type = vec) -->
+<!-- rownames(ann) <- rownames(sim_matrix) -->
+<!-- col_sample <- c("blank" = "orange", "study" = "grey") -->
 
-#' plot the heatmap
-pheatmap(sim_matrix, annotation_col = ann , 
-         annotation_colors = list(sample_type = col_sample), 
-         show_rownames = FALSE, show_colnames = FALSE , 
-         main = "2,2'-(Tetradecylimino)diethanol")
-```
+<!-- #' plot the heatmap -->
+<!-- pheatmap(sim_matrix, annotation_col = ann ,  -->
+<!--          annotation_colors = list(sample_type = col_sample),  -->
+<!--          show_rownames = FALSE, show_colnames = FALSE ,  -->
+<!--          main = "2,2'-(Tetradecylimino)diethanol") -->
+<!-- ``` -->
 
 
-```{r}
-# Hexamethylphosphoramide
-m <- compounds[compounds$Metabolite_Name == "Hexamethylphosphoramide",]
+<!-- ```{r} -->
+<!-- # Hexamethylphosphoramide -->
+<!-- m <- compounds[compounds$Metabolite_Name == "Hexamethylphosphoramide",] -->
 
-# Extract all MS2 spectra in that area
-spectra_H <- filterRanges(full_spectra, 
-                          spectraVariables = c("rtime", "precursorMz"), 
-                          ranges = c(m$rtmin, m$rtmax, m$mzmin, m$mzmax))
+<!-- # Extract all MS2 spectra in that area -->
+<!-- spectra_H <- filterRanges(full_spectra,  -->
+<!--                           spectraVariables = c("rtime", "precursorMz"),  -->
+<!--                           ranges = c(m$rtmin, m$rtmax, m$mzmin, m$mzmax)) -->
 
-vec <- spectra_H$file_index
-vec[vec %in% c(1:4)] <- "blank"
-vec[vec %in% c(5:16)] <- "study"
+<!-- vec <- spectra_H$file_index -->
+<!-- vec[vec %in% c(1:4)] <- "blank" -->
+<!-- vec[vec %in% c(5:16)] <- "study" -->
 
-sim_matrix <- compareSpectra(spectra_H)
-ann <- data.frame(sample_type = vec)
-rownames(ann) <- rownames(sim_matrix)
-col_sample <- c("blank" = "orange", "study" = "grey")
+<!-- sim_matrix <- compareSpectra(spectra_H) -->
+<!-- ann <- data.frame(sample_type = vec) -->
+<!-- rownames(ann) <- rownames(sim_matrix) -->
+<!-- col_sample <- c("blank" = "orange", "study" = "grey") -->
 
-#' plot the heatmap
-pheatmap(sim_matrix, annotation_col = ann ,
-         annotation_colors = list(sample_type = col_sample), 
-         main = "Hexamethylphosphoramide", show_rownames = FALSE, 
-         show_colnames = FALSE)
-```
+<!-- #' plot the heatmap -->
+<!-- pheatmap(sim_matrix, annotation_col = ann , -->
+<!--          annotation_colors = list(sample_type = col_sample),  -->
+<!--          main = "Hexamethylphosphoramide", show_rownames = FALSE,  -->
+<!--          show_colnames = FALSE) -->
+<!-- ``` -->
+
 
