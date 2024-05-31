@@ -33,9 +33,15 @@ library(vioplot)
 
 # intro
 
+Below we load the data with its respective phenodata. We then filter the data
+based on the retention time. 
+
+Note that we also remove every second injection of each vial for all samples
+and QCs. This was performed because of lack of enough material during that
+second injection, which created uncertainty in signals. 
+
 ```{r load-data}
 # get filenames in the pd 
-MZML_PATH <- paste0(getwd(), "/mzmL files/")
 MZML_PATH <- "/home/plouail/pilot_study/mzmL files/"
 #' No Phenodata - to be added
 pd <- read_xlsx("phenodata.xlsx") |>
@@ -58,8 +64,10 @@ sampleData(full)|>
 full <- filterRt(full, c(40, 840))
 ```
 
+We set up parallel processing using 6 cores.
+
 ```{r parallel-process}
-#' Set up parallel processing using 4 cores
+#' Set up parallel processing using 6 cores
 if (.Platform$OS.type == "unix") {
     register(MulticoreParam(6))
 } else
@@ -86,9 +94,10 @@ leg_device_only<- brewer.pal(8, name = "Dark2")[c(1, 5, 3, 6)]
 names(leg_device_only) <- c("Whatman", "Capitainer", "Mitra", "Plasma")
 ```
 
+Below is the number of spectra  of a specific MS level per file.
 
 ```{r echo=TRUE}
-#' Count the number of spectra with a specific MS level per file.
+#' Count the number of spectra
 spectra(full) |>
     msLevel() |>
     split(fromFile(full)) |>
@@ -96,7 +105,13 @@ spectra(full) |>
     do.call(what = cbind)
 ```
 
-```{r bps, eval=FALSE, fig.height=7, fig.width=12, include=FALSE}
+Below we compute a similarity matrix of the BPS of the whole dataset. BPS 
+collapses data in the retention time dimension, providing insights into the 
+most abundant mass-to-charge values (m/z) in the dataset. We then plot this
+matrix as a heatmap. this allows us to compare the MS signal similarity between
+samples.
+
+```{r bps, echo=TRUE, fig.height=7, fig.width=12}
 # set chunksise 
 chunksize <- 1000
 processingChunkSize(spectra(full)) <- chunksize
@@ -120,30 +135,10 @@ pheatmap(sim_matrix, annotation_col = ann,
          show_colnames = F)
 ```
 
-- tic heatmap 
-
-```{r heatmap1, eval=FALSE, include=FALSE}
-#' Total ion chromatogram
-tic <- chromatogram(full, aggregationFun = "sum", chunkSize = 6) |>
-  bin(binSize = 2)
-
-#' Calculate similarity (Pearson correlation) between BPCs
-ticmap <- do.call(cbind, lapply(tic, intensity)) |>
-  cor()
-
-rownames(ticmap) <- colnames(ticmap) <- sampleData(full)$sample_id
-ann <- data.frame(devices = sampleData(full)$device)
-rownames(ann) <- rownames(ticmap)
-
-#' plot the heatmap
-pheatmap(ticmap, annotation_col = ann,
-         annotation_colors = list(devices = leg_device), show_rownames = F, 
-         show_colnames = F)
-```
-
 # internal standard 
 
-these have been spiked in all samples
+The internal standards in this file have been spiked in all samples. We will
+use them to follow how well the the preprocessing of the data is going. 
 
 ```{r is}
 is <- read.xlsx("IS.xlsx") |>
@@ -160,7 +155,9 @@ is
 
 # chromatogrpahic data
 
-- overall: BPC 
+Below we plot the base peak chromatogram (BPC) of the whole datasets and
+subsets of the dataset
+
 ```{r bpc1, echo=TRUE}
 #QC 
 idx_QC <- sampleData(full)$sample_type == "QC"
@@ -181,9 +178,11 @@ legend("topright", col = leg_device,
        legend = names(leg_device), lty = 1, horiz = TRUE, bty = "n")
 ```
 
-filter ? and plot again ?
+We then look at EICs of our internal standards and evaluate them regarding: 
 
-- specific: internal standard eics 
+- peak shape, width
+- intensity variation related to sample-type,... 
+- retention time variation
 
 ```{r eic1, echo=FALSE}
 # plot eic and coloring per device - see if I need to extend rtmin and rtmax 
@@ -229,6 +228,17 @@ for (i in seq_len(nrow(is))) {
 
 # preprocessing
 
+We will now preprocess the data. We will first perform peak picking, for this 
+we set up the followings parameters of the CentWaveParam method:
+
+- `peakwidth`: the expected peak width in seconds. Here looking at our internal
+  standard and other peaks in the dataset we estimate that they are between 10 
+  to 20 second wide 
+- `ppm`: The accepted m/z deviation in ppm. We set it to 50 ppm.
+- some peaks did not have enough datapoints and therefor  we use 
+  `extendLengthMSW = TRUE` to extend these signals. 
+
+
 ```{r pp, eval=!file.exists("full_pp.RData")}
 #' Peakpicking
 param <- CentWaveParam(peakwidth = c(10, 20), ppm = 50, integrate = 2, 
@@ -239,13 +249,19 @@ full <- findChromPeaks(full, param = param, chunkSize = 6L)
 save(full, file = "full_pp.RData")
 ```
 
-
 ```{r}
 load("full_pp.RData")
 ```
 
 Refinement: merge neighboring peaks. Remove artifacts that can be created
 during peak picking.
+
+- `expandRt` and `expandMz` are the maximum allowed distance between two peaks
+  in the retention time and m/z dimensions, respectively. We set them up based
+  on the peakwidth set up from the peak picking step and observing how well the
+  peak picking step performed. 
+- The other parameters are left as default and their definitions can be found 
+  in `?MergeNeighboringPeaksParam` documentation
 
 ```{r refine, eval=!file.exists("full_ref.RData")}
 param <- MergeNeighboringPeaksParam(expandRt = 10,
@@ -310,15 +326,10 @@ for (i in seq_len(nrow(is))) {
 }
 ```
 
-# alignment 
+# Alignment 
 
-I would first try automatic selection of anchor peaks. If it does not work 
-properly then i will introduce the manual generation  of apeak group matrix 
-(see full for the code)
-Also could create that matrix based on correspondence results, plot the features
-and if look could use them for alignemnt. 
-
-before alignment 
+before alignment we can see some retention time variation between samples. 
+Especially towards the first half of the run.
 
 ```{r eval=FALSE, include=FALSE}
 # BPC qc 
@@ -327,7 +338,18 @@ chromatogram(full[idx_QC], aggregationFun = "max",
     plot(main = "BPC QC", col = col_sample[2], lwd = 0.8, peakType = "none")
 ```
 
-- using QC, for correspondence and subset alignemnt 
+For this dataset two alignment round were run. The first one was done using 
+automatic selection of anchor peaks. The second one was done using manual
+selection of anchor peaks and was targeting specifically the area between 150 
+to 400 seconds.
+
+- Using QC samples: 
+We first need to run a correspondence analysis using QC samples. This will allow
+us to select the best anchor peaks for the alignment. For this we set
+`minFraction = 5/6` meaning that we want to keep peaks that are present in at
+least 5 out of 6 of the QC  samples.
+
+We subsequentely perform a subset-based alignment. 
 
 ```{r echo=TRUE, eval=!file.exists("full_align.RData")}
 f <- factor(sampleData(full)$sample_type, levels = "QC")
@@ -353,7 +375,8 @@ legend("topright", col = leg_sample,
        legend = names(leg_sample), lty = 1, bty = "n")
 ```
 
-- evaluate 1
+We evaluate the efficacy of the alignment on our internal standard
+
 ```{r eval=FALSE, include=FALSE}
 full <- applyAdjustedRtime(full)
 # BPC qc 
@@ -408,7 +431,15 @@ for (i in seq_len(nrow(is))) {
 }
 ```
 
-not good enough now do a second round this time targetting the shitty area
+Unfortunately this first run was not good enough to fix some retention time 
+area with strong shifts we therefore now do a second round this time targetting
+this area.
+
+Below we create a table with peaks found in most samples in the 100 to 400s RT
+area. We then use this table to manually select the peaks to be used as anchor
+peaks for the alignment. We also plot their EICs before and after alignemnt to
+visually evaluate the alignment. 
+
 
 ```{r alignment_using_selected_standards, echo=TRUE, eval=!file.exists("full_align.RData")}
 #' creating matrix for rt alignment
@@ -598,9 +629,24 @@ for (i in seq_len(nrow(standard))) {
 }
 ```
 
-# correspondence 
+We seem to have manage to align the problem area of the data as well as
+possible. 
 
-for correspondence, do per devices and remove blanks of course. what of QCs ? also remove them ? 
+# Correspondence 
+
+Correspodence is the step were features are defined based on how often a peak 
+is repeated in the dataset. We will based the correspondence on their presence 
+in the different devices. we set up the following parameters:
+
+- `sampleGroups`: the factor to group the samples. Here we separate the dataset
+  per devices and remove blanks from neing considered in this step.
+- `minFraction`: the minimum fraction of samples of a certain device in which a
+  peak must be present to be considered a feature. We set it to 0.5. which mean
+  in this case that a peak must be present in at least 10 out of 20 samples of
+  a device to be considered a feature.
+- `bw`: the bandwidth of the kernel density estimation. We set it to 2 after
+  testing a checking that is it wide enough to capture the peaks for one
+  feature.
 
 ```{r, eval=!file.exists("full_preprocessing.RData")}
 blank_idx <- sampleData(full)$sample_type == "blank"
@@ -621,6 +667,9 @@ nrow(featureDefinitions(full))
 
 # gapfilling
 
+We will now use gapfilling to fill in missing values in the dataset. We will
+use the `ChromPeakAreaParam` method with defualt parameters for this. 
+
 ```{r, eval=!file.exists("full_preprocessing.RData")}
 #' Number of missing values
 sum(is.na(featureValues(full)))
@@ -633,15 +682,24 @@ sum(is.na(featureValues(full)))
 
 # flag features in blanks 
 
+We will now flag features that are highly present in blanks. We will use the 
+`filterFeatures` with the `BlankFlag` method to do this. By setting up a
+`threshold = 2` we will flag the features that have an intensity in the blanks
+that is at least half the intensity in the study samples.
+
 ```{r, eval=!file.exists("full_preprocessing.RData")}
 idx_blank <- sampleData(full)$sample_type == "blank"
-full <- filterFeatures(full, BlankFlag(blankIndex = idx_blank, qcIndex = idx_QC))
+full <- filterFeatures(full, BlankFlag(blankIndex = idx_blank, qcIndex = idx_QC), 
+                       threshold = 2)
 
 featureDefinitions(full)$possible_contaminants[is.na(featureDefinitions(full)$possible_contaminants)] <- FALSE 
 featureDefinitions(full)$possible_contaminants <- as.logical(featureDefinitions(full)$possible_contaminants)
 ```
 
 # summarized experiment 
+
+We finalize preprocessing by generating a summarizedExperiment object. We also 
+remove the previously flagged features from the data for subsequent analysis.
 
 ```{r, eval=!file.exists("full_preprocessing.RData")}
 library(SummarizedExperiment)
@@ -650,13 +708,11 @@ res_full <- quantify(full, method = "sum", filled = FALSE)
 assays(res_full)$raw_filled <- featureValues(full, method = "sum",
                                         filled = TRUE )
 
-# we actually remove flagged features data them for downstream analysis in the sumexp object
+# we actually remove flagged features data them for downstream analysis in
+# the sumexp object
 nrow(res_full)
 res_full <- res_full[!featureDefinitions(full)$possible_contaminants, ]
 nrow(res_full)
-
-# save the data
-#full@spectra <- setBackend(full@spectra, MsBackendMemory())
 
 save(res_full, file = "SumExp_full_preprocessing.RData")
 save(full, file = "full_preprocessing.RData")
@@ -666,7 +722,7 @@ save(full, file = "full_preprocessing.RData")
 load(file = "SumExp_full_preprocessing.RData")
 load(file = "full_preprocessing.RData")
 
-#export data 
+# export full and filled data 
 de <- list(values = as.data.frame(featureValues(full)), definitions = featureDefinitions(full))
 write.xlsx(de, "feature_results.xlsx", rowNames = TRUE)
 ```
@@ -692,10 +748,13 @@ names(leg_device_only) <- c("Whatman", "Capitainer", "Mitra", "Plasma")
 ```
 
 ## noise comparison 
-In general i think we should discuss how the comparison are done, i should
-probably introduce comparison within same sample also...  let's see
 
-```{r eval=FALSE, include=FALSE}
+Below we compare the noise signals between devices. We first calculate the
+overall signal in the dataset and then calculate the signal that is in the
+chromatographic peaks detection. We then subtract the two to get the noise
+signal.
+
+```{r echo=TRUE}
 # overall signal in the dataset 
 #' - for each file calculate the sum of intensities 
 background  <- spectra(full) |>
@@ -728,251 +787,15 @@ for (i in seq_along(group)) {
 axis(1, at = seq_along(group), labels = names(group))
 ```
 
-# normalisation
-
 ```{r}
 library(ggfortify)
 library(SummarizedExperiment)
 library(RColorBrewer)
 ```
 
-PCA 
+# Data exploration and comparison
 
-```{r}
-#' Impute missing values using an uniform distribution
-na_unidis <- function(z) {
-    na <- is.na(z)
-    if (any(na)) {
-        min = min(z, na.rm = TRUE)
-        z[na] <- runif(sum(na), min = min/2, max = min)
-    }
-    z
-}
-
-#' Row-wise impute missing values and add the data as a new assay
-tmp <- apply(assay(res_full, "raw_filled"), MARGIN = 1, na_unidis)
-assays(res_full)$raw_filled_imputed <- t(tmp)
-```
-
-```{r unsupervised checks1, fig.height=5, fig.width=10, include=TRUE}
-#' Log2 transform and scale data
-vals <- assay(res_full, "raw_filled_imputed") |>
-    log2() |>
-    t() |>
-    scale(center = TRUE, scale = TRUE)
-
-#' Perform the PCA
-pca_res <- prcomp(vals, scale = FALSE, center = FALSE)
-
-#' Plot the results
-vals_st <- cbind(vals, device = res_full$device)
-pca_12 <- autoplot(pca_res, data = vals_st , colour = 'device', scale = 0) +
-    scale_color_manual(values = col_device)
-pca_34 <- autoplot(pca_res, data = vals_st, colour = 'device',
-                   x = 3, y = 4, scale = 0) +
-    scale_color_manual(values = col_device)
-grid.arrange(pca_12, pca_34, ncol = 2)
-```
-
-```{r fig.height=5, fig.width=10, include=TRUE}
-#plot by sampletype
-vals_st <- cbind(vals, sample_type = res_full$sample_type)
-pca_12 <- autoplot(pca_res, data = vals_st , colour = 'sample_type', scale = 0) +
-    scale_color_manual(values = col_sample)
-pca_34 <- autoplot(pca_res, data = vals_st, colour = 'sample_type',
-                   x = 3, y = 4, scale = 0) +
-    scale_color_manual(values = col_sample)
-grid.arrange(pca_12, pca_34, ncol = 2)
-```
-
-intensity distribution
-
-```{r}
-idx_blank <- sampleData(full)$sample_type == "blank"
-leg_device<- brewer.pal(8, name = "Dark2")[c(1, 5, 3, 6, 2)]
-names(leg_device) <- c("Whatman", "Capitainer", "Mitra", "Plasma", "Mix")
-col_device <- leg_device[sampleData(full)$device[!idx_blank]]
-```
-
-```{r}
-layout(mat = matrix(1:3, ncol = 1), height = c(0.2, 0.2, 0.8))
-
-par(mar = c(0.2, 4.5, 0.2, 3))
-barplot(apply(assay(res_full, "raw")[,!idx_blank], MARGIN = 2, 
-              function(x) sum(!is.na(x))),
-        col = col_device, ylab = "features raw data", xaxt = "n", 
-        space = 0.012)
-barplot(apply(assay(res_full, "raw_filled")[,!idx_blank], MARGIN = 2, 
-              function(x) sum(!is.na(x))),
-        col = col_device, ylab = "features filled data", xaxt = "n", 
-        space = 0.012)
-boxplot(log2(assay(res_full, "raw_filled")[,!idx_blank]), xaxt = "n",
-        ylab = expression(log[2]~abundance~filled~data),
-        col = col_device, outline=FALSE, medlty = "blank", 
-        border = col_device, varwidth = TRUE)
-points(colMedians(log2(assay(res_full, "raw_filled")[,!idx_blank]), 
-                  na.rm = TRUE), type = "b", pch = 16) 
-grid(nx = NA, ny = NULL)
-legend("topright", col = leg_device,
-       legend = names(leg_device), lty=1, lwd = 2, xpd = TRUE, ncol = 4, 
-       cex = 0.8,  bty = "n")
-```
-
-RLA
-
-```{r}
-par(mfrow = c(1, 1), mar = c(0.2, 4.5, 2.5, 3))
-boxplot(rowRla(assay(res_full, "raw_filled")[, !idx_blank],
-               group = res_full$device[!idx_blank]),
-        cex = 0.5, pch = 16, boxwex = 1,
-        col = col_device, ylab = "RLA",
-        border = paste0(col_device, 40),
-        outline = FALSE, xaxt = "n", main = "Relative log abundance", 
-        cex.main = 1)
-grid(nx = NA, ny = NULL)
-abline(h = 0, lty=3, lwd = 1, col = "black")
-legend("topright", col = leg_device,
-       legend = names(leg_device), lty=1, lwd = 2, xpd = TRUE, ncol = 3,
-       cex = 0.8,  bty = "n")
-```
-
-median scaling 
-
-```{r eval=FALSE, include=FALSE}
-#' Compute median and generate normalization factor, we all compute together, 
-#' they are part of the same experiment as we believe the same technical 
-#' variance is applied here
-mdns <- apply(assay(res_full, "raw_filled"), MARGIN = 2, median, na.rm = TRUE)
-nf_mdn <- mdns / median(mdns[!idx_blank]) # To not take blank data in account
-assays(res_full)$norm <- sweep(assay(res_full, "raw_filled"), MARGIN = 2, 
-                               nf_mdn, '/')
-```
-
-results
-
-```{r eval=FALSE, fig.height=7, fig.width=8, include=FALSE}
-par(mfrow = c(2, 1), mar = c(1, 4, 3, 1))
-
-boxplot(rowRla(assay(res_full, "raw_filled")[, !idx_blank],
-               group = res_full$device[!idx_blank]),
-        cex = 0.5, pch = 16, boxwex = 1,
-        col = col_device, ylab = "RLA",
-        border = paste0(col_device, 40),
-        outline = FALSE, xaxt = "n", 
-        main = "Relative log abundance before normalisation", 
-        cex.main = 1)
-grid(nx = NA, ny = NULL)
-abline(h = 0, lty=3, lwd = 1, col = "black")
-legend("topright", col = leg_device,
-       legend = names(leg_device), lty=1, lwd = 2, xpd = TRUE, ncol = 3,
-       cex = 0.8,  bty = "n")
-boxplot(rowRla(assay(res_full, "norm")[, !idx_blank],
-               group = res_full$device[!idx_blank]),
-        cex = 0.5, pch = 16, boxwex = 1,
-        col = col_device, ylab = "RLA",
-        border = paste0(col_device, 40),
-        outline = FALSE, xaxt = "n", 
-        main = "Relative log abundance after normalization",
-        cex.main = 1, ylim = c(-4.0 , 2.0))
-grid(nx = NA, ny = NULL)
-abline(h = 0, lty=3, lwd = 1, col = "black")
-legend("topright", col = leg_device,
-       legend = names(leg_device), lty=1, lwd = 2, xpd = TRUE, ncol = 3,
-       cex = 0.8,  bty = "n")
-```
-
-```{r eval=FALSE, include=FALSE}
-#' Define colors for the differenT device
-leg_device<- brewer.pal(8, name = "Dark2")[c(4, 1, 5, 3, 6, 2)]
-names(leg_device) <- c("NA", "Whatman", "Capitainer", "Mitra", "Plasma", "Mix")
-col_device <- leg_device[sampleData(full)$device]
-```
-
-PCA again 
-
-```{r eval=FALSE, fig.height=5, fig.width=10, include=FALSE}
-#' impute 
-tmp <- apply(assay(res_full, "norm"), MARGIN = 1, na_unidis)
-assays(res_full)$norm_imputed <- t(tmp)
-
-#' Log2 transform and scale data
-vals <- assay(res_full, "norm_imputed") |>
-    log2() |>
-    t() |>
-    scale(center = TRUE, scale = TRUE)
-
-#' Perform the PCA
-pca_res <- prcomp(vals, scale = FALSE, center = FALSE)
-
-#' Plot the results
-vals_st <- cbind(vals, device = res_full$device)
-pca_12 <- autoplot(pca_res, data = vals_st , colour = 'device', scale = 0) +
-    scale_color_manual(values = col_device)
-pca_34 <- autoplot(pca_res, data = vals_st, colour = 'device',
-                   x = 3, y = 4, scale = 0) +
-    scale_color_manual(values = col_device) 
-grid.arrange(pca_12, pca_34, ncol = 2)
-```
-
-```{r eval=FALSE, fig.height=5, fig.width=10, include=FALSE}
-# plot using injection_index
-vals_st <- cbind(vals, injection_index = res_full$injection_index)
-
-pca_12 <- autoplot(pca_res, data = vals_st , colour = 'injection_index', scale = 0) 
-pca_34 <- autoplot(pca_res, data = vals_st, colour = 'injection_index',
-                   x = 3, y = 4, scale = 0) 
-grid.arrange(pca_12, pca_34, ncol = 2)
-```
-
-```{r eval=FALSE, fig.height=5, fig.width=10, include=FALSE}
-#plot sample type
-vals_st <- cbind(vals, sample_type = res_full$sample_type)
-pca_12 <- autoplot(pca_res, data = vals_st , colour = 'sample_type', scale = 0) +
-    scale_color_manual(values = col_sample)
-pca_34 <- autoplot(pca_res, data = vals_st, colour = 'sample_type',
-                   x = 3, y = 4, scale = 0) +
-    scale_color_manual(values = col_sample)
-grid.arrange(pca_12, pca_34, ncol = 2)
-```
-
-```{r}
-# indices
-qc_idx <- res_full$sample_type == "QC"
-study_idx <- res_full$sample_type == "sample"
-idx_m <- res_full$device == "Mitra" & res_full$sample_type != "blank"
-idx_c <- res_full$device == "Capitainer" & res_full$sample_type != "blank"
-idx_p <- res_full$device == "Plasma" & res_full$sample_type != "blank"
-idx_w <- res_full$device == "Whatman" & res_full$sample_type != "blank"
-
-# Compute Rsds on  all data per devices
-sample_res <- cbind(
-    Raw_QC = rowRsd(assay(res_full, "raw_filled")[, qc_idx]),
-    Raw_Study = rowRsd(assay(res_full, "raw_filled")[, study_idx]),
-    Raw_Mitra = rowRsd(assay(res_full, "raw_filled")[, idx_m]),
-    Raw_Capitainer = rowRsd(assay(res_full, "raw_filled")[, idx_c]),
-    Raw_Plasma = rowRsd(assay(res_full, "raw_filled")[, idx_p]),
-    Raw_Whatman = rowRsd(assay(res_full, "raw_filled")[, idx_w]))
-
-#' Compute quantile for better data visualization
-res_df <- data.frame(
-    QC = quantile(sample_res[, "Raw_QC"], na.rm = TRUE),
-    Study = quantile(sample_res[, "Raw_Study"], na.rm = TRUE),
-    Mitra = quantile(sample_res[, "Raw_Mitra"], na.rm = TRUE),
-    Capitainer = quantile(sample_res[, "Raw_Capitainer"], na.rm = TRUE),
-    Plasma = quantile(sample_res[, "Raw_Plasma"], na.rm = TRUE),
-    Whatman = quantile(sample_res[, "Raw_Whatman"], na.rm = TRUE))
-
-cpt <- paste0("Distribution of RSD values across samples for the raw and ",
-              "normalized data.")
-pandoc.table(res_df, style = "rmarkdown", caption = cpt, split.table = Inf)
-```
-
-Very nice because clear decrease in RSDs after normalization in QCs but not in
-study sample which is what we want. 
-
-# Comparison after preprocessing
-
-remove blanks now
+We remove blank and QC samples from the study samples 
 
 ```{r}
 blank <- full[sampleData(full)$sample_type == "blank", keepFeatures = TRUE]
@@ -993,9 +816,24 @@ names(leg_device) <- c("Whatman", "Capitainer", "Mitra", "Plasma")
 col_device <- leg_device[sampleData(full)$device]
 ```
 
-Plot all the PCA again without blanks and QCs
+Plot all the PCA to observe the data structure and grouping of the different 
+samples. 
 
-```{r eval=FALSE, fig.height=5, fig.width=10, include=FALSE}
+```{r echo=TRUE, fig.height=5, fig.width=10}
+#' Impute missing values using an uniform distribution
+na_unidis <- function(z) {
+    na <- is.na(z)
+    if (any(na)) {
+        min = min(z, na.rm = TRUE)
+        z[na] <- runif(sum(na), min = min/2, max = min)
+    }
+    z
+}
+
+#' Row-wise impute missing values and add the data as a new assay
+tmp <- apply(assay(res_, "raw_filled"), MARGIN = 1, na_unidis)
+assays(res)$raw_filled_imputed <- t(tmp)
+
 #' Log2 transform and scale data
 vals <- assay(res_full, "raw_filled_imputed") |>
     log2() |>
@@ -1017,7 +855,7 @@ pca_34 <- autoplot(pca_res, data = vals_st, colour = 'device',
 grid.arrange(pca_12, pca_34, ncol = 2)
 ```
 
-```{r eval=FALSE, fig.height=5, fig.width=10, include=FALSE}
+```{r echo=TRUE, fig.height=5, fig.width=10}
 #' check injection index
 vals_st <- cbind(vals, injection_index = res_full$injection_index)
 
@@ -1027,7 +865,7 @@ pca_34 <- autoplot(pca_res, data = vals_st, colour = 'injection_index',
 grid.arrange(pca_12, pca_34, ncol = 2)
 ```
 
-```{r eval=FALSE, fig.height=5, fig.width=10, include=FALSE}
+```{r echo=TRUE, fig.height=5, fig.width=10}
 #' check injection index
 res_full$injection <- duplicated(res_full$Vial)
 
@@ -1041,7 +879,8 @@ pca_34 <- autoplot(pca_res, data = vals_st, colour = 'injection',
 grid.arrange(pca_12, pca_34, ncol = 2)
 ```
 
-- evaluate QC 
+NOTES: the chunks below were used to justify the removal of the 2nd injection
+of each vials. They are not to be run for the final report. 
 
 ```{r eval=FALSE, fig.height=5, fig.width=10, include=FALSE}
 #' Log2 transform and scale data
@@ -1122,7 +961,7 @@ boxplot(log2(combine_df), col = c("blue", "lightblue"),
         ylab = "Log2 intensity", xaxt = "n", main = "QC1 vs QC2")
 ```
 
-- intensity vs injection index : just plot the QCs in order ? 
+- intensity vs injection index : just plot the QCs in injection order 
 
 ```{r eval=FALSE, fig.height=6, fig.width=5, include=FALSE}
 par(mar = c(4, 4, 3, 2))
@@ -1147,7 +986,7 @@ grid(nx = NA, ny = NULL)
 ```
 
 
-#poster plots 
+# poster and paper plots 
 
 - summary plot: the plot below is one of the summary plot that compare results
 after prepossessing and normalization.
@@ -1339,14 +1178,14 @@ upset(as.data.frame(upset_df), sets = c("Whatman", "Capitainer", "Mitra", "Plasm
 # Annotation of the features
 
 ```{r}
-# these need to be from the same file system
+# These need to be from the same file system
 full@spectra$file_index <- fromFile(full)
 ```
 
-First need to prep spectra input 
+First need to prepare the different spectra input 
 
 ```{r prep-spectra,  eval = !file.exists("full_spectra.RData")}
-## dataset 
+## From our dataset 
 # get spectra data and change their backend 
 idx_fts <- rownames(featureDefinitions(full)) %in% rownames(res_full)
 full_spectra <- featureSpectra(full, msLevel = 2L, features = idx_fts) # not annotating for contamination
@@ -1389,20 +1228,23 @@ library(RSQLite)
 load("full_spectra.RData")
 ```
 
+For this analysis we use the GNPS database. We first load the database from a local sqlite file. 
+
 ```{r loadgnps}
-# "/home/plouail/MsBackendSql.GNPS.matchms.cleaned.v1.sqlite" for cluster
-#"C:/Users/plouail/Documents/MsBackendSql.GNPS.matchms.cleaned.v1.sqlite"
 #load gnps library
 mb <- Spectra(file.path("/home/plouail/pilot_study/MsBackendSql.GNPS.matchms.cleaned.v1.sqlite"),
     drv = SQLite(), source = MsBackendOfflineSql())
 ```
+
+Below we prepare the database spectra the same way as we prepared our own 
+spectra.
 
 ```{r filtergnps, echo=TRUE}
 mb <- setBackend(mb, MsBackendMemory())
 low_int <- function(x, ...) {
     x > max(x, na.rm = TRUE) * 0.05
 }
-## phili change this to use filterRanges()
+
 #' remove negative polarity 
 mb <- mb[mb$polarity == 1]
 
@@ -1411,6 +1253,9 @@ mb <- filterIntensity(mb, intensity = low_int)
 mb <- filterPrecursorPeaks(mb, mz = "==", ppm = 50)
 mb <- mb[lengths(mb) > 1]
 ```
+
+We then compare our dataset spectra with the database and select matches with
+the score above 0.8
 
 ```{r matching, echo=TRUE}
 #' remove parallel processing 
@@ -1446,7 +1291,8 @@ load("SumExp_full_preprocessing.RData")
 res_full <- res_full[, !res_full$sample_type %in% c("blank", "QC")]
 ```
 
-## remove duplciate matches (using inchikey) - keep best score
+Below we remove duplicate matches (using inchikey) and keep the keep best
+scoring match for each inchikey.
 
 ```{r echo=TRUE}
 rmv_duplicate <- function(md) {
@@ -1467,7 +1313,9 @@ md_full
 toberefined <- cbind(md_full, assay(res_full)[md_full$feature_id,])
 write.csv(toberefined, "toberefined_devices.csv")
 ```
-I need them to do some refinement on the annotation
+
+I need them to do some refinement on the annotation before doing proper plotting.
+The plots below are just to prepare the codes, they are not the actual results !!
 
 # plot resulting compounds
 
@@ -1489,7 +1337,9 @@ for (i in seq_len(nrow(md_full))) {
 }
 ```
 
-I guess after refinement we would ahve mazve multiple compound per feature if there is incertaintz so for some plot we will take a unique amount of feature to be fair in the calculation
+I guess after refinement we would have maybe multiple compound per feature if
+there is uncertainty so for some plot we will take a unique amount of feature 
+to be fair in the calculation
 
 ```{r}
 # take fts 
@@ -1544,7 +1394,7 @@ vioplot(intensity, ylab = "Log2 intensity", col = leg_device,
         space = 0.05)
 ```
 
-```{r echo=TRUE, fig.height=8, fig.width=8}
+```{r eval=FALSE, fig.height=8, fig.width=8, include=FALSE}
 # Bin features per RT slices
 res_fts <- res_full[fts,]
 vc <- rowData(res_fts)$rtmed
@@ -1693,3 +1543,11 @@ cpt <- paste0("Summary table of the annotated compounds for each solvent type.")
 pandoc.table(head(Summary_table), style = "rmarkdown", caption = cpt, split.tables = 150)
 write.csv(Summary_table, file = paste0(dir, "Summary_table_devices.csv"))
 ```
+
+Session and version info: 
+
+```{r}
+sessionInfo()
+```
+
+
