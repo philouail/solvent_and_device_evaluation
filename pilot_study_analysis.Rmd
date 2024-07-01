@@ -1343,7 +1343,7 @@ to be fair in the calculation
 
 ```{r}
 # take fts 
-fts <- unique(md_full$feature_id)
+fts <- unique(md_full$feature_id) # Phili:if no duplicate remove that 
 
 # create res object for each for these features 
 # Intensity and missing values 
@@ -1351,6 +1351,13 @@ res_m <- res_full[fts, res_full$device == "Mitra"]
 res_c <- res_full[fts, res_full$device == "Capitainer"]
 res_w <- res_full[fts, res_full$device == "Whatman"]
 res_p <- res_full[fts, res_full$device == "Plasma"]
+
+intensity <- cbind(
+    Whatman = log2(as.numeric(assay(res_w, "raw_filled"))),
+    Capitainer = log2(as.numeric(assay(res_c, "raw_filled"))),
+    Mitra = log2(as.numeric(assay(res_m, "raw_filled"))),
+    Plasma = log2(as.numeric(assay(res_p, "raw_filled")))
+)
 
 idx_fts <- cbind(Whatman = rowSums(is.na(assay(res_w, "raw_filled"))) < 10,
                  Capitainer = rowSums(is.na(assay(res_c, "raw_filled"))) < 10,
@@ -1361,13 +1368,6 @@ res_m <- res_m[rowSums(is.na(assay(res_m, "raw_filled"))) < 10,]
 res_c <- res_c[rowSums(is.na(assay(res_c, "raw_filled"))) < 10,]
 res_w <- res_w[rowSums(is.na(assay(res_w, "raw_filled"))) < 10, ]
 res_p <- res_p[rowSums(is.na(assay(res_p, "raw_filled"))) < 10,]
-
-intensity <- list(
-    Whatman = log2(as.numeric(assay(res_w, "raw_filled"))),
-    Capitainer = log2(as.numeric(assay(res_c, "raw_filled"))),
-    Mitra = log2(as.numeric(assay(res_m, "raw_filled"))),
-    Plasma = log2(as.numeric(assay(res_p, "raw_filled")))
-)
 
 num_features <- cbind(
     Whatman = nrow(res_w), 
