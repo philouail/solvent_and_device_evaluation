@@ -717,6 +717,8 @@ missing_values <- cbind(
 )
 
 #General plot - now without flagged features
+png(paste0("paper_figures/Figure2B1.png"), width = 5, height = 8,
+    units = "cm", res = 2000, pointsize = 6, type = "cairo-png")
 layout(mat = matrix(1:3, ncol = 1), height = c(0.3, 0.3, 0.8))
 par(mar = c(1, 4.5, 1, 3))
 barplot(colSums(num_features),
@@ -726,6 +728,7 @@ barplot(c(missing_values),
         ylab = "% of missing values", col = leg_solvent, space = 0.05, ylim = c(0, 60))
 vioplot(intensity, 
         ylab = "Log2 intensity", col = leg_solvent, space = 0.05)
+dev.off()
 ```
 
 ```{r}
@@ -768,6 +771,8 @@ intensity_solvent <- list(
 intensity_solvent <- lapply(intensity_solvent, log2)
 
 # Plot
+png(paste0("paper_figures/Figure2B2.png"), width = 8, height = 8,
+    units = "cm", res = 2000, pointsize = 6, type = "cairo-png")
 layout(mat = matrix(1:2, ncol = 1), heights = c(0.5, 0.5))
 par(mar = c(0.5, 4.5, 2, 3))
 
@@ -780,9 +785,9 @@ for (i in 2:ncol(num_features_solvent)) {
   lines(num_features_solvent[,i], col = leg_solvent[i], type = "b", pch = 16)
 }
 axis(1, at = 1:length(num_features_solvent[,1]), labels = FALSE)
-grid()
-legend("top", legend = names(intensity_solvent), col = leg_solvent, pch = 16, 
-       cex = 1, horiz = TRUE, bty = "n")
+grid(lwd = 0.5)
+legend("topleft", legend = names(intensity_solvent), col = leg_solvent, pch = 16, 
+       cex = 0.8, horiz = TRUE, bty = "n", text.width = 2.3)
 
 # Plot intensity
 par(mar = c(5, 4.5, 2, 3))
@@ -794,8 +799,9 @@ for (i in 2:length(intensity_solvent)) {
 }
 axis(1, at = 1:length(intensity_solvent[[1]]), 
      labels = names(intensity_solvent[[1]]), las = 2, cex.axis = 0.8)
-grid()
+grid(lwd = 0.5)
 mtext("Retention time (s)", side = 1, line = 4, cex = 1)
+dev.off()
 ```
 
 - median of median
@@ -859,8 +865,11 @@ upset_df <- lapply(idx_fts, as.integer)
 names(leg_solvent) <- names(upset_df)
 # Plot the UpSet plot
 library(UpSetR)
+png(paste0("paper_figures/Figure2B3.png"), width = 15, height = 10,
+    units = "cm", res = 2000, pointsize = 6, type = "cairo-png")
 upset(as.data.frame(upset_df), sets = c("MetOH_H2O", "ACN", "MetOH", "ACN_MetOH"),
       sets.bar.color = leg_solvent, mainbar.y.label = "Number of common features", keep.order = TRUE, mainbar.y.max= 3000)
+dev.off()
 ```
 
 
@@ -1024,11 +1033,38 @@ for (i in seq_len(nrow(md_full))) {
 
 # Comparison on annotated data 
 
+I now have a refined list of compounds that I can use to plot the results. 
+
+```{r}
+compounds <- read_xlsx("Annotation_List .xlsx") |>
+    as.data.frame()
+```
+
+I will use the function `mclosest` to find the closest match between the
+compounds and the features. 
+
+```{r}
+query <- cbind(compounds$Average_Mz, compounds$Average_Rtmin)
+target <- cbind(rowData(res_full)$mzmed, rowData(res_full)$rtmed)
+
+idx <- mclosest(query, target, ppm = c(50, 0), tolerance = c(0,10))
+
+nrow(query)
+length(unique(idx))
+match_c <- compounds[!is.na(idx),]
+
+idx <- idx[!is.na(idx)]
+# save feature matrix 
+df <- res_full[idx,]
+df <- cbind( match_c, assay(df, "norm"))
+write.csv(assay(df), "features_annotated_VAMS.csv")
+```
+
 - summary plot: the plot below is one of the summary plot that compare results
 after prepossessing and normalization.
 
 ```{r fig.height=8, fig.width=6}
-fts <- unique(md_full$feature_id)
+fts <- idx
 
 # Intensity and missing values 
 res_mh <- res_full[fts, res_full$solvent == "MEOH_H2O"]
@@ -1069,6 +1105,8 @@ missing_values <- cbind(
 )
 
 #General plot - now without flagged features
+png(paste0("paper_figures/Annot_VAMS_summary.png"), width = 5, height = 8,
+    units = "cm", res = 2000, pointsize = 6, type = "cairo-png")
 layout(mat = matrix(1:3, ncol = 1), height = c(0.3, 0.3, 0.8))
 par(mar = c(1, 4.5, 1, 3))
 barplot(colSums(num_features),
@@ -1079,6 +1117,7 @@ barplot(c(missing_values),
         ylim = c(0, 60))
 vioplot(intensity, 
         ylab = "Log2 intensity", col = leg_solvent, space = 0.05)
+dev.off()
 ```
 
 - number of features / intensity per rt slices 
@@ -1119,6 +1158,8 @@ layout(mat = matrix(1:2, ncol = 1), heights = c(0.5, 0.5))
 par(mar = c(0.5, 4.5, 2, 3))
 
 # Plot number of features
+png(paste0("paper_figures/Annot_VAMS_rtslices.png"), width = 8, height = 8,
+    units = "cm", res = 2000, pointsize = 6, type = "cairo-png")
 ylim_features <- c(0, max(unlist(num_features_solvent)))
 plot(num_features_solvent[,1], col = leg_solvent[1], ylab = "Number of features",
      xlab = "", type = "b", pch = 16, xaxt = "n", ylim = ylim_features,
@@ -1127,9 +1168,9 @@ for (i in 2:ncol(num_features_solvent)) {
   lines(num_features_solvent[,i], col = leg_solvent[i], type = "b", pch = 16)
 }
 axis(1, at = 1:length(num_features_solvent[,1]), labels = FALSE)
-grid()
-legend("top", legend = names(intensity_solvent), col = leg_solvent, pch = 16, 
-       cex = 1, horiz = TRUE, bty = "n")
+grid(lwd = 0.5)
+legend("topleft", legend = names(intensity_solvent), col = leg_solvent, pch = 16, 
+       cex = 0.8, horiz = TRUE, bty = "n", text.width = 2.3)
 
 # Plot intensity
 par(mar = c(5, 4.5, 2, 3))
@@ -1141,8 +1182,9 @@ for (i in 2:length(intensity_solvent)) {
 }
 axis(1, at = 1:length(intensity_solvent[[1]]), 
      labels = names(intensity_solvent[[1]]), las = 2, cex.axis = 0.8)
-grid()
+grid(lwd = 0.5)
 mtext("Retention time (s)", side = 1, line = 4, cex = 1)
+dev.off()
 ```
 
 - median of median
@@ -1206,8 +1248,12 @@ upset_df <- lapply(idx_fts, as.integer)
 names(leg_solvent) <- names(upset_df)
 # Plot the UpSet plot
 library(UpSetR)
+png(paste0("paper_figures/annot_VAMS_upset.png"), width = 15, height = 10,
+    units = "cm", res = 2000, pointsize = 6, type = "cairo-png")
 upset(as.data.frame(upset_df), sets = c("MetOH_H2O", "ACN", "MetOH", "ACN_MetOH"),
-      sets.bar.color = leg_solvent, mainbar.y.label = "Number of common features", keep.order = TRUE, mainbar.y.max= 100)
+      sets.bar.color = leg_solvent, mainbar.y.label = "Number of common features", 
+      keep.order = TRUE, mainbar.y.max= 100)
+dev.off()
 ```
 
 

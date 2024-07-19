@@ -51,9 +51,9 @@ full <- readMsExperiment(paste0(MZML_PATH, pd$filename), sampleData = pd)
 full
 
 #remove second injection of each vial for all (also QCs)
-idx <- duplicated(pd$Vial)
-idx[pd$sample_type == "blank"] <- FALSE
-full <- full[!idx]
+# idx <- duplicated(pd$Vial)
+# idx[pd$sample_type == "blank"] <- FALSE
+# full <- full[!idx]
 
 sampleData(full)|> 
     as.data.frame() |> 
@@ -111,7 +111,7 @@ most abundant mass-to-charge values (m/z) in the dataset. We then plot this
 matrix as a heatmap. this allows us to compare the MS signal similarity between
 samples.
 
-```{r bps, echo=TRUE, fig.height=7, fig.width=12}
+```{r bps, eval=FALSE, fig.height=7, fig.width=12, include=FALSE}
 # set chunksise 
 chunksize <- 1000
 processingChunkSize(spectra(full)) <- chunksize
@@ -130,9 +130,18 @@ ann <- data.frame(devices = sampleData(full)$device)
 rownames(ann) <- rownames(sim_matrix)
 
 #' plot the heatmap
-pheatmap(sim_matrix, annotation_col = ann,
+#' png(filename, width = width, height = height, res = res)
+p <- pheatmap(sim_matrix, annotation_col = ann,
          annotation_colors = list(devices = leg_device), show_rownames = F, 
          show_colnames = F)
+
+p
+
+png(paste0("paper_figures/FigureS4.png"), width = 15, height = 10,
+    units = "cm", res = 2000, pointsize = 5, type = "cairo-png")
+  grid::grid.newpage()
+  grid::grid.draw(p$gtable)
+dev.off()
 ```
 
 # internal standard 
@@ -360,6 +369,7 @@ param <- PeakDensityParam(sampleGroups = f,
 full <- groupChromPeaks(full, param = param)
 
 #' align the data 
+idx_QC <- sampleData(full)$sample_type == "QC"
 subset <- which(idx_QC)
 param <- PeakGroupsParam(minFraction = 0.9, extraPeaks = 50, span = 0.5,
                          subsetAdjust = "average",
@@ -377,7 +387,7 @@ legend("topright", col = leg_sample,
 
 We evaluate the efficacy of the alignment on our internal standard
 
-```{r eval=FALSE, include=FALSE}
+```{r echo=TRUE}
 full <- applyAdjustedRtime(full)
 # BPC qc 
 chromatogram(full[idx_QC], aggregationFun = "max",
@@ -689,8 +699,7 @@ that is at least half the intensity in the study samples.
 
 ```{r, eval=!file.exists("full_preprocessing.RData")}
 idx_blank <- sampleData(full)$sample_type == "blank"
-full <- filterFeatures(full, BlankFlag(blankIndex = idx_blank, qcIndex = idx_QC), 
-                       threshold = 2)
+full <- filterFeatures(full, BlankFlag(blankIndex = idx_blank, qcIndex = idx_QC, threshold = 2))
 
 featureDefinitions(full)$possible_contaminants[is.na(featureDefinitions(full)$possible_contaminants)] <- FALSE 
 featureDefinitions(full)$possible_contaminants <- as.logical(featureDefinitions(full)$possible_contaminants)
@@ -797,16 +806,23 @@ library(RColorBrewer)
 
 We remove blank and QC samples from the study samples 
 
-```{r}
+```{r echo=TRUE}
 blank <- full[sampleData(full)$sample_type == "blank", keepFeatures = TRUE]
 res_blank <- res_full[, res_full$sample_type == "blank"]
 
 QC <- full[sampleData(full)$sample_type == "QC", keepFeatures = TRUE]
 res_QC <- res_full[, res_full$sample_type == "QC"]
 
+na_idx <- apply(assay(res_QC, "raw_filled"), MARGIN = 1, function(x) all(is.na(x)))
+res_QC <- res_QC[!na_idx, ]
+
 full <- full[!sampleData(full)$sample_type %in% c("blank", "QC"),
              keepFeatures = TRUE]
 res_full <- res_full[, !res_full$sample_type %in% c("blank", "QC")]
+
+#remove features that only have NA in the study samples
+na_idx <- apply(assay(res_full, "raw_filled"), MARGIN = 1, function(x) all(is.na(x)))
+res_full <- res_full[!na_idx, ]
 ```
 
 ```{r echo=TRUE}
@@ -819,7 +835,7 @@ col_device <- leg_device[sampleData(full)$device]
 Plot all the PCA to observe the data structure and grouping of the different 
 samples. 
 
-```{r echo=TRUE, fig.height=5, fig.width=10}
+```{r fig.height=5, fig.width=10, include=FALSE}
 #' Impute missing values using an uniform distribution
 na_unidis <- function(z) {
     na <- is.na(z)
@@ -831,8 +847,8 @@ na_unidis <- function(z) {
 }
 
 #' Row-wise impute missing values and add the data as a new assay
-tmp <- apply(assay(res_, "raw_filled"), MARGIN = 1, na_unidis)
-assays(res)$raw_filled_imputed <- t(tmp)
+tmp <- apply(assay(res_full, "raw_filled"), MARGIN = 1, na_unidis)
+assays(res_full)$raw_filled_imputed <- t(tmp)
 
 #' Log2 transform and scale data
 vals <- assay(res_full, "raw_filled_imputed") |>
@@ -844,7 +860,6 @@ vals <- assay(res_full, "raw_filled_imputed") |>
 pca_res <- prcomp(vals, scale = FALSE, center = FALSE)
 
 #' Plot the results
-
 vals_st <- cbind(vals, device = res_full$device)
 pca_12 <- autoplot(pca_res, data = vals_st , colour = 'device', scale = 0) +
     scale_color_manual(values = col_device_only)
@@ -882,9 +897,12 @@ grid.arrange(pca_12, pca_34, ncol = 2)
 NOTES: the chunks below were used to justify the removal of the 2nd injection
 of each vials. They are not to be run for the final report. 
 
-```{r eval=FALSE, fig.height=5, fig.width=10, include=FALSE}
+```{r echo=TRUE, fig.height=5, fig.width=10}
+tmp <- apply(assay(res_QC, "raw_filled"), MARGIN = 1, na_unidis)
+assays(res_QC)$raw_filled_imputed <- t(tmp)
+
 #' Log2 transform and scale data
-vals <- assay(res_QC, "norm_imputed") |>
+vals <- assay(res_QC, "raw_filled_imputed") |>
     log2() |>
     t() |>
     scale(center = TRUE, scale = TRUE)
@@ -905,7 +923,7 @@ pca_34 <- autoplot(pca_res, data = vals_st, colour = 'injection',
 grid.arrange(pca_12, pca_34, ncol = 2)
 ```
 
-```{r eval=FALSE, include=FALSE}
+```{r echo=TRUE}
 #' Log2 transform and scale data
 vals <- assay(res_QC, "raw_filled_imputed") |>
     log2() |>
@@ -928,14 +946,15 @@ grid.arrange(pca_12, pca_34, ncol = 2)
 
 - compare intensity of QC1 vs QC2 
 
-```{r eval=FALSE, fig.height=6, fig.width=5, include=FALSE}
+```{r echo=TRUE, fig.height=6, fig.width=5}
 qc1 <- res_QC[, res_QC$injection == 1]
 qc2 <- res_QC[, res_QC$injection == 2]
 
-qc1_int <- apply(assay(qc1, "norm"), MARGIN = 1, mean, na.rm = TRUE)
-qc2_int <- apply(assay(qc2, "norm"), MARGIN = 1, mean, na.rm = TRUE)
+qc1_int <- apply(assay(qc1, "raw_filled"), MARGIN = 1, mean, na.rm = TRUE)
+qc2_int <- apply(assay(qc2, "raw_filled"), MARGIN = 1, mean, na.rm = TRUE)
 
 combine_df <- data.frame(QC1 = qc1_int, QC2 = qc2_int)
+
 
 par(mfrow = c(2, 1), mar = c(1, 4, 3, 1))
 barplot(apply(is.na(combine_df),MARGIN = 2, sum), col =  c("blue", "lightblue"), 
@@ -945,7 +964,7 @@ boxplot(log2(combine_df), col =  c("blue", "lightblue"),
 ```
 
 
-```{r eval=FALSE, fig.height=6, fig.width=5, include=FALSE}
+```{r echo=TRUE, fig.height=6, fig.width=5}
 qc1 <- res_QC[, res_QC$injection == 1]
 qc2 <- res_QC[, res_QC$injection == 2]
 
@@ -954,19 +973,24 @@ qc2_int <- apply(assay(qc2, "raw_filled"), MARGIN = 1, mean, na.rm = TRUE)
 
 combine_df <- data.frame(QC1 = qc1_int, QC2 = qc2_int)
 
+png(paste0("paper_figures/FigureS2_2.png"), width = 5, height = 8,
+    units = "cm", res = 2000, pointsize = 6, type = "cairo-png")
 par(mfrow = c(2, 1), mar = c(1, 4, 3, 1))
 barplot(apply(is.na(combine_df),MARGIN = 2, sum), col = c("blue", "lightblue"), 
         ylab = "Number of missing values", xaxt = "n", main = "QC1 vs QC2")
 boxplot(log2(combine_df), col = c("blue", "lightblue"), 
         ylab = "Log2 intensity", xaxt = "n", main = "QC1 vs QC2")
+dev.off()
 ```
 
 - intensity vs injection index : just plot the QCs in injection order 
 
-```{r eval=FALSE, fig.height=6, fig.width=5, include=FALSE}
+```{r echo=TRUE, fig.height=6, fig.width=5}
+png(paste0("paper_figures/FigureS2_1.png"), width = 6, height = 7,
+    units = "cm", res = 2000, pointsize = 6, type = "cairo-png")
 par(mar = c(4, 4, 3, 2))
 boxplot(log2(assay(res_QC, "raw_filled")),
-        ylab = expression(log[2]~abundance~filled~data), xaxt = "n",
+        ylab = expression(log[2]~intensity~filled~data), xaxt = "n",
         col =  c("blue", "lightblue"), outline=FALSE, medlty = "blank", 
         border =  c("blue", "lightblue"), varwidth = TRUE, 
         main = "Raw filled data", xlab = "Injection order")
@@ -974,15 +998,16 @@ points(colMedians(log2(assay(res_QC, "raw_filled")),
                   na.rm = TRUE), type = "b", pch = 16) 
 grid(nx = NA, ny = NULL)
 axis(1, labels = FALSE)
+dev.off()
 
-boxplot(log2(assay(res_QC, "norm")), xaxt = "n",
-        ylab = expression(log[2]~abundance~filled~data),
-        col =  c("blue", "lightblue"), outline=FALSE, medlty = "blank", 
-        border =  c("blue", "lightblue"), varwidth = TRUE,
-        main = "Normalised data")
-points(colMedians(log2(assay(res_QC, "norm")), 
-                  na.rm = TRUE), type = "b", pch = 16)
-grid(nx = NA, ny = NULL)
+# boxplot(log2(assay(res_QC, "raw_filled")), xaxt = "n",
+#         ylab = expression(log[2]~abundance~filled~data),
+#         col =  c("blue", "lightblue"), outline=FALSE, medlty = "blank", 
+#         border =  c("blue", "lightblue"), varwidth = TRUE,
+#         main = "Normalised data")
+# points(colMedians(log2(assay(res_QC, "norm")), 
+#                   na.rm = TRUE), type = "b", pch = 16)
+# grid(nx = NA, ny = NULL)
 ```
 
 
@@ -1030,6 +1055,8 @@ percent_missing <- cbind(
     Plasma = sum(is.na(assay(res_p, "raw")))/length(assay(res_p, "raw")) * 100
 )
 # Plot
+png(paste0("paper_figures/Figure3_1.png"), width = 5, height = 8,
+    units = "cm", res = 2000, pointsize = 6, type = "cairo-png")
 layout(mat = matrix(1:3, ncol = 1), height = c(0.3, 0.3, 0.8))
 par(mar = c(1, 4.5, 1, 3))
 barplot(colSums(num_features), col = leg_device, ylab = "Number of features", 
@@ -1038,6 +1065,7 @@ barplot(c(percent_missing), ylab = "% of missing values",
         col = leg_device, space = 0.05, ylim = c(0, 60))
 vioplot(intensity, ylab = "Log2 intensity", col = leg_device,
         space = 0.05)
+dev.off()
 ```
 
 ```{r eval=FALSE, include=FALSE}
@@ -1080,10 +1108,13 @@ intensity_solvent <- list(
 intensity_solvent <- lapply(intensity_solvent, log2)
 
 # Plot
+png(paste0("paper_figures/Figure3_2.png"), width = 8, height = 8,
+    units = "cm", res = 2000, pointsize = 6, type = "cairo-png")
 layout(mat = matrix(1:2, ncol = 1), heights = c(0.5, 0.5))
 par(mar = c(0.5, 4.5, 2, 3))
-#
+
 # Plot number of features
+
 ylim_features <- c(0, max(unlist(num_features_solvent)))
 plot(num_features_solvent[,1], col = leg_device[1], ylab = "Number of features",
      xlab = "", type = "b", pch = 16, xaxt = "n", ylim = ylim_features,
@@ -1092,12 +1123,13 @@ for (i in 2:ncol(num_features_solvent)) {
   lines(num_features_solvent[,i], col = leg_device[i], type = "b", pch = 16)
 }
 axis(1, at = 1:length(num_features_solvent[,1]), labels = FALSE)
-grid()
+grid(lwd = 0.5)
 legend("top", legend = names(intensity_solvent), col = leg_device, pch = 16, 
        cex = 1, horiz = TRUE, bty = "n")
 
 # Plot intensity
 par(mar = c(5, 4.5, 2, 3))
+
 ylim_intensity <- range(unlist(intensity_solvent))
 plot(intensity_solvent[[1]], type = "b", pch = 16, xlab = "",
      ylab = "Log2 intensity", col = leg_device[1], xaxt = "n", ylim = ylim_intensity)
@@ -1107,7 +1139,8 @@ for (i in 2:length(intensity_solvent)) {
 axis(1, at = 1:length(intensity_solvent[[1]]), 
      labels = names(intensity_solvent[[1]]), las = 2, cex.axis = 0.8)
 mtext("Retention time (s)", side = 1, line = 4, cex = 1)
-grid()
+grid(lwd = 0.5)
+dev.off()
 ```
 
 - medians of the medians
@@ -1170,9 +1203,12 @@ upset_df <- lapply(idx_fts, as.integer)
 
 # Plot the UpSet plot
 library(UpSetR)
+png(paste0("paper_figures/Figure3_3.png"), width = 15, height = 10,
+    units = "cm", res = 2000, pointsize = 6, type = "cairo-png")
 upset(as.data.frame(upset_df), sets = c("Whatman", "Capitainer", "Mitra", "Plasma"),
       sets.bar.color = leg_device,  mainbar.y.label = "Number of common features", 
       keep.order = TRUE, mainbar.y.max= 4000)
+dev.off()
 ```
 
 # Annotation of the features
@@ -1337,14 +1373,36 @@ for (i in seq_len(nrow(md_full))) {
 }
 ```
 
-I guess after refinement we would have maybe multiple compound per feature if
-there is uncertainty so for some plot we will take a unique amount of feature 
-to be fair in the calculation
+I know have a refined list of compounds that I can use to plot the results. 
 
 ```{r}
-# take fts 
-fts <- unique(md_full$feature_id) # Phili:if no duplicate remove that 
+compounds <- read_xlsx("Annotation_List .xlsx") |>
+    as.data.frame()
+```
 
+I will use the function `mclosest` to find the closest match between the
+compounds and the features. 
+
+```{r}
+query <- cbind(compounds$Average_Mz, compounds$Average_Rtmin)
+target <- cbind(rowData(res_full)$mzmed, rowData(res_full)$rtmed)
+
+idx <- mclosest(query, target, ppm = c(50, 0), tolerance = c(0,10))
+
+nrow(query)
+length(unique(idx))
+match_c <- compounds[!is.na(idx),]
+
+idx <- idx[!is.na(idx)]
+# save feature matrix 
+df <- res_full[idx,]
+df <- cbind( match_c, assay(df, "raw_filled"))
+write.csv(assay(df), "features_annotated_pilot_study.csv")
+```
+
+
+```{r}
+fts <- idx
 # create res object for each for these features 
 # Intensity and missing values 
 res_m <- res_full[fts, res_full$device == "Mitra"]
@@ -1384,6 +1442,8 @@ percent_missing <- cbind(
     Plasma = sum(is.na(assay(res_p, "raw")))/length(assay(res_p, "raw")) * 100
 )
 # Plot
+png(paste0("paper_figures/Annot_pilot_study_summary.png"), width = 5, height = 8,
+    units = "cm", res = 2000, pointsize = 6, type = "cairo-png")
 layout(mat = matrix(1:3, ncol = 1), height = c(0.3, 0.3, 0.8))
 par(mar = c(1, 4.5, 1, 3))
 barplot(colSums(num_features), col = leg_device, ylab = "Number of features", 
@@ -1392,6 +1452,7 @@ barplot(c(percent_missing), ylab = "% of missing values",
         col = leg_device, space = 0.05, ylim = c(0, 60))
 vioplot(intensity, ylab = "Log2 intensity", col = leg_device,
         space = 0.05)
+dev.off()
 ```
 
 ```{r eval=FALSE, fig.height=8, fig.width=8, include=FALSE}
@@ -1427,11 +1488,13 @@ intensity_solvent <- list(
 intensity_solvent <- lapply(intensity_solvent, log2)
 
 # Plot
+png(paste0("paper_figures/Annot_pilot_study_rtslices.png"), width = 8, height = 8,
+    units = "cm", res = 2000, pointsize = 6, type = "cairo-png")
 layout(mat = matrix(1:2, ncol = 1), heights = c(0.5, 0.5))
 par(mar = c(0.5, 4.5, 2, 3))
 
 # Plot number of features
-ylim_features <- c(0, max(unlist(num_features_solvent)), na.rm = TRUE)
+ylim_features <- c(0, max(unlist(num_features_solvent)))
 plot(num_features_solvent[,1], col = leg_device[1], ylab = "Number of features",
      xlab = "", type = "b", pch = 16, xaxt = "n", ylim = ylim_features,
      main = "Analysis along the RT axis for each devices")
@@ -1439,8 +1502,8 @@ for (i in 2:ncol(num_features_solvent)) {
   lines(num_features_solvent[,i], col = leg_device[i], type = "b", pch = 16)
 }
 axis(1, at = 1:length(num_features_solvent[,1]), labels = FALSE)
-grid()
-legend("top", legend = names(intensity_solvent), col = leg_device, pch = 16, 
+grid(lwd = 0.5)
+legend("topright", legend = names(intensity_solvent), col = leg_device, pch = 16, 
        cex = 1, horiz = TRUE, bty = "n")
 
 # Plot intensity
@@ -1454,12 +1517,13 @@ for (i in 2:length(intensity_solvent)) {
 axis(1, at = 1:length(intensity_solvent[[1]]), 
      labels = names(intensity_solvent[[1]]), las = 2, cex.axis = 0.8)
 mtext("Retention time (s)", side = 1, line = 4, cex = 1)
-grid()
+grid(lwd = 0.5)
+dev.off()
 ```
 
 - medians of the medians
 
-```{r echo=TRUE, fig.height=8, fig.width=8}
+```{r eval=FALSE, fig.height=8, fig.width=8, include=FALSE}
 ftc <-function(res_solvent, fts_idx) {
     tmp <- rowMedians(assay(res_solvent, "raw_filled"), na.rm = TRUE)
     cuts_tmp <- cuts[fts_idx]
@@ -1517,9 +1581,12 @@ upset_df <- lapply(idx_fts, as.integer)
 
 # Plot the UpSet plot
 library(UpSetR)
+png(paste0("paper_figures/annot_pilot_study_upset.png"), width = 15, height = 10,
+    units = "cm", res = 2000, pointsize = 6, type = "cairo-png")
 upset(as.data.frame(upset_df), sets = c("Whatman", "Capitainer", "Mitra", "Plasma"),
       sets.bar.color = leg_device,  mainbar.y.label = "Number of common features", 
       keep.order = TRUE, mainbar.y.max= 90)
+dev.off()
 ```
 
 ```{r eval=FALSE, include=FALSE}
