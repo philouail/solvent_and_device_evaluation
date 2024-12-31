@@ -873,6 +873,66 @@ upset(as.data.frame(upset_df), sets = c("MetOH_H2O", "ACN", "MetOH", "ACN_MetOH"
 dev.off()
 ```
 
+# Average feature number per sample per devices 
+
+```{r}
+#load sumexp - to be removed later 
+load("Rdata_files/DBS/SumExp_full_normalisation.RData")
+res_mh <- res_full[, res_full$solvent == "MEOH_H2O"]
+res_m <- res_full[, res_full$solvent == "MEOH"]
+res_a <- res_full[, res_full$solvent == "ACN"]
+res_am <- res_full[, res_full$solvent == "ACN_MEOH"]
+
+nb_fts_mh <-  colSums(!is.na(assay(res_mh, "raw")))
+nb_fts_m <-  colSums(!is.na(assay(res_m, "raw")))
+nb_fts_a <-  colSums(!is.na(assay(res_a, "raw")))
+nb_fts_am <-  colSums(!is.na(assay(res_am, "raw")))
+
+mean_cp <- cbind(
+    MetOH_H2O = mean(nb_fts_mh),
+    MetOH = mean(nb_fts_m),
+    ACN = mean(nb_fts_a),
+    ACN_MetOH = mean(nb_fts_am)
+) 
+
+mean_cp
+
+sd_cp <- cbind(
+    MetOH_H2O = sd(nb_fts_mh),
+    MetOH = sd(nb_fts_m),
+    ACN = sd(nb_fts_a),
+    ACN_MetOH = sd(nb_fts_am)
+)
+
+sd_cp
+
+sum_nb <- rbind(mean_cp, sd_cp)
+rownames(sum_nb) <- c("Mean", "Standard deviation")
+sum_nb <- t(sum_nb)
+
+cbind("Solvent group" = row.names(sum_nb), sum_nb)
+
+sum_nb <- as.data.frame(sum_nb)
+
+test <- cbind("Solvent group" = row.names(sum_nb), sum_nb)
+
+write.xlsx(test, "table_DBS.xlsx", rowNames = TRUE)
+# Install required package
+
+library(gt)
+pretty_table <- gt(test) %>%
+  tab_header(
+    title = "Whatman: mean and standard deviation of the number of features per solvent",
+  ) %>%
+  fmt_number(
+    columns = c("Mean", "Standard deviation"),
+    decimals = 2
+  )
+
+pretty_table
+gtsave(pretty_table, "Whatman_table.png")
+```
+
 ```{r}
 save(res_full, file = paste0(dir, "SumExp_full_normalisation.RData"))
 ```

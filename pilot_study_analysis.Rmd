@@ -40,10 +40,9 @@ Note that we also remove every second injection of each vial for all samples
 and QCs. This was performed because of lack of enough material during that
 second injection, which created uncertainty in signals. 
 
-```{r load-data}
+```{r load-data, warning=FALSE, message=FALSE}
 # get filenames in the pd 
-MZML_PATH <- "/home/plouail/pilot_study/mzmL files/"
-#' No Phenodata - to be added
+MZML_PATH <- "pilot_study_files/mzmL files/"
 pd <- read_xlsx("phenodata.xlsx") |>
     as.data.frame()
 
@@ -51,9 +50,9 @@ full <- readMsExperiment(paste0(MZML_PATH, pd$filename), sampleData = pd)
 full
 
 #remove second injection of each vial for all (also QCs)
-# idx <- duplicated(pd$Vial)
-# idx[pd$sample_type == "blank"] <- FALSE
-# full <- full[!idx]
+idx <- duplicated(pd$Vial)
+idx[pd$sample_type == "blank"] <- FALSE
+full <- full[!idx]
 
 sampleData(full)|> 
     as.data.frame() |> 
@@ -69,9 +68,9 @@ We set up parallel processing using 6 cores.
 ```{r parallel-process}
 #' Set up parallel processing using 6 cores
 if (.Platform$OS.type == "unix") {
-    register(MulticoreParam(6))
+    register(MulticoreParam(3))
 } else
-    register(SnowParam(6))
+    register(SnowParam(3))
 ```
 
 ```{r echo=TRUE}
@@ -112,9 +111,6 @@ matrix as a heatmap. this allows us to compare the MS signal similarity between
 samples.
 
 ```{r bps, eval=FALSE, fig.height=7, fig.width=12, include=FALSE}
-# set chunksise 
-chunksize <- 1000
-processingChunkSize(spectra(full)) <- chunksize
 
 #' Combining all spectra per file into a single spectrum
 bps <- spectra(full) |>
@@ -170,17 +166,17 @@ subsets of the dataset
 ```{r bpc1, echo=TRUE}
 #QC 
 idx_QC <- sampleData(full)$sample_type == "QC"
-chromatogram(full[idx_QC], aggregationFun = "max", msLevel = 1, chunkSize = 6) |>
+chromatogram(full[idx_QC], aggregationFun = "max", msLevel = 1, chunkSize = 3) |>
     plot(main = "BPC QC", col = leg_qc, lwd = 1)
 
 # all sample 
-chromatogram(full, aggregationFun = "max", msLevel = 1, chunkSize = 6) |>
+chromatogram(full, aggregationFun = "max", msLevel = 1, chunkSize = 3) |>
     plot(main = "BPC", col = col_sample, lwd = 1)
 grid()
 legend("topright", col = leg_sample,
        legend = names(leg_sample), lty = 1, horiz = TRUE, bty = "n")
 
-chromatogram(full, aggregationFun = "max", msLevel = 1, chunkSize = 6) |>
+chromatogram(full, aggregationFun = "max", msLevel = 1, chunkSize = 3) |>
     plot(main = "BPC", col = col_device, lwd = 1)
 grid()
 legend("topright", col = leg_device,
@@ -199,7 +195,7 @@ We then look at EICs of our internal standards and evaluate them regarding:
 eics <- chromatogram(
     full,
     rt = as.matrix(is[, c("rtmin", "rtmax")]),
-    mz = as.matrix(is[, c("mzmin", "mzmax")]), msLevel = 1, chunkSize = 6)
+    mz = as.matrix(is[, c("mzmin", "mzmax")]), msLevel = 1, chunkSize = 3)
 
 fData(eics)$mz <- is$mz
 fData(eics)$rt <- is$rt
@@ -218,7 +214,7 @@ for (i in seq_len(nrow(is))) {
 eics <- chromatogram(
     full[idx_QC],
     rt = as.matrix(is[, c("rtmin", "rtmax")]),
-    mz = as.matrix(is[, c("mzmin", "mzmax")]), msLevel = 1, chunkSize = 6)
+    mz = as.matrix(is[, c("mzmin", "mzmax")]), msLevel = 1, chunkSize = 3)
 
 fData(eics)$mz <- is$mz
 fData(eics)$rt <- is$rt
@@ -253,7 +249,7 @@ we set up the followings parameters of the CentWaveParam method:
 param <- CentWaveParam(peakwidth = c(10, 20), ppm = 50, integrate = 2, 
                        snthresh = 5, extendLengthMSW = TRUE)
 
-full <- findChromPeaks(full, param = param, chunkSize = 6L)
+full <- findChromPeaks(full, param = param, chunkSize = 3L)
 
 save(full, file = "full_pp.RData")
 ```
@@ -278,7 +274,7 @@ param <- MergeNeighboringPeaksParam(expandRt = 10,
                                     ppm = 10,
                                     minProp = 0.75)
 
-full <- refineChromPeaks(full, param = param, chunkSize = 6)
+full <- refineChromPeaks(full, param = param, chunkSize = 3)
 
 chromPeakData(full)$merged |>
                       table()
@@ -294,7 +290,7 @@ eics <- chromatogram(
     rt = as.matrix(is[, c("rtmin", "rtmax")]),
     mz = as.matrix(is[, c("mzmin", "mzmax")]),
     msLevel = 1,
-    chunkSize = 6)
+    chunkSize = 3)
 
 fData(eics)$mz <- is$mz
 fData(eics)$rt <- is$rt
@@ -317,7 +313,7 @@ eics <- chromatogram(
     rt = as.matrix(is[, c("rtmin", "rtmax")]),
     mz = as.matrix(is[, c("mzmin", "mzmax")]),
     msLevel = 1,
-    chunkSize = 6)
+    chunkSize = 3)
 
 fData(eics)$mz <- is$mz
 fData(eics)$rt <- is$rt
@@ -343,7 +339,7 @@ Especially towards the first half of the run.
 ```{r eval=FALSE, include=FALSE}
 # BPC qc 
 chromatogram(full[idx_QC], aggregationFun = "max",
-             msLevel = 1, chunkSize = 6) |>
+             msLevel = 1, chunkSize = 3) |>
     plot(main = "BPC QC", col = col_sample[2], lwd = 0.8, peakType = "none")
 ```
 
@@ -358,7 +354,7 @@ us to select the best anchor peaks for the alignment. For this we set
 `minFraction = 5/6` meaning that we want to keep peaks that are present in at
 least 5 out of 6 of the QC  samples.
 
-We subsequentely perform a subset-based alignment. 
+We subsequently perform a subset-based alignment.
 
 ```{r echo=TRUE, eval=!file.exists("full_align.RData")}
 f <- factor(sampleData(full)$sample_type, levels = "QC")
@@ -391,7 +387,7 @@ We evaluate the efficacy of the alignment on our internal standard
 full <- applyAdjustedRtime(full)
 # BPC qc 
 chromatogram(full[idx_QC], aggregationFun = "max",
-             msLevel = 1, chunkSize = 6) |>
+             msLevel = 1, chunkSize = 3) |>
     plot(main = "BPC QC after alignment", col = leg_qc, lwd = 1, 
          peakType = "none")
 
@@ -401,7 +397,7 @@ eics <- chromatogram(
     rt = as.matrix(is[, c("rtmin", "rtmax")]),
     mz = as.matrix(is[, c("mzmin", "mzmax")]),
     msLevel = 1,
-    chunkSize = 6)
+    chunkSize = 3)
 
 fData(eics)$mz <- is$mz
 fData(eics)$rt <- is$rt
@@ -424,7 +420,7 @@ eics <- chromatogram(
     rt = as.matrix(is[, c("rtmin", "rtmax")]),
     mz = as.matrix(is[, c("mzmin", "mzmax")]),
     msLevel = 1,
-    chunkSize = 6)
+    chunkSize = 3)
 
 fData(eics)$mz <- is$mz
 fData(eics)$rt <- is$rt
@@ -457,7 +453,7 @@ standard <- read.xlsx("alignment.xlsx") |>
     as.data.frame()
 standard <- standard[order(standard$rt),]
 
-#lets also plot all of them before and after alignmet
+#lets also plot all of them before and after alignment
 standard$rtmin <- standard$rt - 25
 standard$rtmax <- standard$rt + 25
 
@@ -470,7 +466,7 @@ eics <- chromatogram(
     rt = as.matrix(standard[, c("rtmin", "rtmax")]),
     mz = as.matrix(standard[, c("mzmin", "mzmax")]),
     msLevel = 1,
-    chunkSize = 6)
+    chunkSize = 3)
 
 fData(eics)$mz <- standard$mz
 fData(eics)$rt <- standard$rt
@@ -548,7 +544,7 @@ param <- PeakGroupsParam(span = 0.5,
                          peakGroupsMatrix = final_table,
                          subset = which(!blank_idx),
                          subsetAdjust = "average")
-full <- adjustRtime(full, param = param, chunkSize = 6L)
+full <- adjustRtime(full, param = param, chunkSize = 3L)
 
 plotAdjustedRtime(full, col = paste0(col_sample, 80), peakGroupsPch = 1)
 ```
@@ -556,7 +552,7 @@ plotAdjustedRtime(full, col = paste0(col_sample, 80), peakGroupsPch = 1)
 ```{r echo=TRUE, eval=!file.exists("full_align.RData")}
 full <- applyAdjustedRtime(full)
 #bpc 
-chromatogram(full[idx_QC], aggregationFun = "max", msLevel = 1, chunkSize = 6) |>
+chromatogram(full[idx_QC], aggregationFun = "max", msLevel = 1, chunkSize = 3) |>
     plot(main = "BPC", col = leg_qc, lwd = 1, peakType = "none")
 
 #check eic full 
@@ -565,7 +561,7 @@ eics <- chromatogram(
     rt = as.matrix(is[, c("rtmin", "rtmax")]),
     mz = as.matrix(is[, c("mzmin", "mzmax")]),
     msLevel = 1,
-    chunkSize = 6)
+    chunkSize = 3)
 
 fData(eics)$mz <- is$mz
 fData(eics)$rt <- is$rt
@@ -588,7 +584,7 @@ eics <- chromatogram(
     rt = as.matrix(is[, c("rtmin", "rtmax")]),
     mz = as.matrix(is[, c("mzmin", "mzmax")]),
     msLevel = 1,
-    chunkSize = 6)
+    chunkSize = 3)
 
 fData(eics)$mz <- is$mz
 fData(eics)$rt <- is$rt
@@ -617,7 +613,7 @@ eics <- chromatogram(
     rt = as.matrix(standard[, c("rtmin", "rtmax")]),
     mz = as.matrix(standard[, c("mzmin", "mzmax")]),
     msLevel = 1,
-    chunkSize = 6)
+    chunkSize = 3)
 
 fData(eics)$mz <- standard$mz
 fData(eics)$rt <- standard$rt
@@ -684,7 +680,7 @@ use the `ChromPeakAreaParam` method with defualt parameters for this.
 #' Number of missing values
 sum(is.na(featureValues(full)))
 
-full <- fillChromPeaks(full, param = ChromPeakAreaParam(), chunkSize = 6)
+full <- fillChromPeaks(full, param = ChromPeakAreaParam(), chunkSize = 3)
 
 #' How many missing values after
 sum(is.na(featureValues(full)))
@@ -1209,6 +1205,56 @@ upset(as.data.frame(upset_df), sets = c("Whatman", "Capitainer", "Mitra", "Plasm
       sets.bar.color = leg_device,  mainbar.y.label = "Number of common features", 
       keep.order = TRUE, mainbar.y.max= 4000)
 dev.off()
+```
+
+# Average feature number per sample per devices 
+
+```{r}
+#load sumexp - to be removed later 
+load("SumExp_full_preprocessing.RData")
+
+res_clean <- res_full[, !res_full$sample_type %in% c("QC", "blank")]
+
+result_table <- c()
+
+for (device in unique(res_clean$device)) {
+    res <- res_clean[, res_clean$device == device]
+    for (sample in unique(res$sample)) {
+        res_s <- res[, res$sample == sample]
+        mean_nb_fts <- mean(colSums(!is.na(assay(res_s, "raw_filled"))))
+        sd_nb_fts <- sd(colSums(!is.na(assay(res_s, "raw_filled"))))
+        result_table <- rbind(result_table, cbind(device, sample, mean_nb_fts, sd_nb_fts))
+    }
+}
+
+colnames(result_table) <- c("Device", "Sample ID", "Mean", "Standard deviation")
+
+result_table <- as.data.frame(result_table)
+
+#order by sample number 
+result_table <- result_table[order(result_table$`Sample number`),]
+
+# Install required package
+
+library(gt)
+pretty_table <- gt(result_table) %>%
+  tab_header(
+    title = "Devices comparison: mean and standard deviation of the number of features per solvent",
+  ) %>%
+  fmt_number(
+    columns = c("Mean", "Standard deviation"),
+    decimals = 2
+  )
+
+write.xlsx(result_table, "feature_number_per_sample_per_device.xlsx", rowNames = FALSE)
+
+pretty_table
+gtsave(pretty_table, "Devices_table.png")
+
+barplot(as.numeric(result_table$Mean), col = leg_device,
+        names.arg = result_table$`Sample ID`,
+        ylab = "Mean number of features", xlab = "Sample ID", 
+        main = "Mean number of features per sample per devices")
 ```
 
 # Annotation of the features
